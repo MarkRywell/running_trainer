@@ -126,8 +126,20 @@ void main() {
         final session = hard.single;
         // At *goal* pace. Running the reps at anything faster would make the
         // taper a second race week.
-        expect(session.zone, IntensityZone.marathon);
-        expect(session.repZone, IntensityZone.marathon);
+        //
+        // The zone is the nearest rung to that pace, not `marathon`: a 10K goal
+        // of 51:00 is 5:06/km, which for this athlete is threshold effort, and
+        // labelling the hardest-scheduled session of the taper `marathon` painted
+        // it as the easiest thing in the week.
+        expect(
+          session.prescribedPace,
+          isNotNull,
+          reason: 'the goal pace is not on the zone ladder, so it has to be '
+              'stated rather than inferred',
+        );
+        expect(session.zone,
+            plan.paces.nearestZone(session.prescribedPace!));
+        expect(session.repZone, session.zone);
         expect(session.reps, isNotNull);
         expect(session.repDistanceM, isNotNull);
       });

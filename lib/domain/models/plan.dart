@@ -73,6 +73,7 @@ class Workout {
     this.repDistanceM,
     this.repRecovery,
     this.repZone,
+    this.prescribedPace,
   });
 
   final String title;
@@ -145,6 +146,28 @@ class Workout {
   /// fraction is measured against.
   final IntensityZone? repZone;
 
+  /// The exact pace this session is to be run at, when it is not a zone's pace.
+  ///
+  /// The session card used to derive its number from [zone] alone, which is a
+  /// five-rung classification of a continuum. Real prescriptions do not land on
+  /// the rungs: a 10K goal of 51:00 is 5:06/km, and for the athlete who set it
+  /// the ladder had threshold at 5:09 and interval at 4:53 — **nothing at 5:06**.
+  /// So the card said one number and the session's own description said another,
+  /// and the card is the one a runner reads first.
+  ///
+  /// This is the number. [zone] stays a classification and keeps driving colour
+  /// and the 80/20 check; it is no longer asked to be a measurement.
+  final Pace? prescribedPace;
+
+  /// The pace to show on the card.
+  ///
+  /// Falls back to the zone's pace for every session that is prescribed *at* a
+  /// zone, which is almost all of them. Only the sessions that are prescribed at
+  /// something off-ladder — the taper's race-pace set, the goal race itself —
+  /// carry an explicit pace.
+  Pace displayPace(TrainingPaces paces) =>
+      prescribedPace ?? paces.forZone(zone);
+
   /// A copy placed on [day]. Used where a workout is built by hand rather than
   /// by a day pattern, and must not lose the other fields doing so.
   Workout withWeekday(int day) => Workout(
@@ -161,6 +184,7 @@ class Workout {
         repDistanceM: repDistanceM,
         repRecovery: repRecovery,
         repZone: repZone,
+        prescribedPace: prescribedPace,
       );
 
   @override
@@ -324,6 +348,27 @@ class TrainingPaces {
         IntensityZone.easy => easy,
         IntensityZone.recovery => recovery,
       };
+
+  /// The zone whose pace is closest to [pace].
+  ///
+  /// For colour and classification only — never to produce a number, which is
+  /// what [Workout.prescribedPace] is for. Used where a session is prescribed at
+  /// a pace that is not on the ladder: the taper's race-pace set at 5:06/km is
+  /// threshold effort for an athlete whose marathon-pace equivalent is 5:46, and
+  /// labelling it `marathon` would paint the hardest-scheduled session of the
+  /// block as the easiest.
+  IntensityZone nearestZone(Pace pace) {
+    var best = IntensityZone.easy;
+    var bestGap = -1;
+    for (final candidate in IntensityZone.values) {
+      final gap = (forZone(candidate).secPerKm - pace.secPerKm).abs();
+      if (bestGap < 0 || gap < bestGap) {
+        bestGap = gap;
+        best = candidate;
+      }
+    }
+    return best;
+  }
 
   /// The wide band for easy running: recovery end to marathon end.
   (Pace, Pace) get easyBand => (recovery, easy);

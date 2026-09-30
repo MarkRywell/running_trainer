@@ -9,7 +9,7 @@ Only third-party dependency is `shared_preferences`; the typeface is bundled, no
 
 ```bash
 flutter pub get
-flutter test                        # 626 unit + widget, mocked storage
+flutter test                        # 630 unit + widget, mocked storage
 flutter test integration_test -d emulator-5554   # 12 on-device, REAL storage
 flutter analyze                     # must be clean
 flutter build web --release
@@ -610,6 +610,51 @@ not to exempt a phase from deloading** — and it is not done yet.
 The `>=1 quality session` invariant therefore covers *common* weeks and exempts
 all cutbacks, which is what "common" was always meant to mean.
 
+## A session's pace is a fact, not something to infer from its zone
+
+**Found via a real report, and it was the second half of a fix I had already
+made.** A runner's taper card read **5:46/km** while the same session's own
+description read **5:06/km**. The previous round had corrected the *description*
+to the goal pace and left the number on the card, which is the part a runner reads
+first. Two numbers for one session, on the session that matters most.
+
+The cause is structural, and no amount of picking a different zone fixes it:
+
+```
+ladder:  rep 4:28   int 4:53   thr 5:09   mar 5:46   easy 6:36
+goal:    10K 51:00  = 5:06/km
+```
+
+**The goal pace is not on the ladder at all.** The card derived its number from
+`paces.forZone(workout.zone)`, and `marathon` gave 5:46. Choosing the nearest rung
+would shrink the error rather than remove it, because there is no rung at 5:06.
+A zone is a five-rung classification of a continuum; real prescriptions do not
+land on the rungs.
+
+- **`Workout.prescribedPace`** is the number, nullable. `Workout.displayPace(paces)`
+  is `prescribedPace ?? paces.forZone(zone)`, so the fallback stays the common case
+  and only off-ladder sessions need the field. A test asserts a plain tempo still
+  resolves from its zone, or the field would be pointless.
+- **`TrainingPaces.nearestZone(pace)`** classifies for *colour only*. The taper's
+  race-pace set was labelled `marathon`, which painted the hardest-scheduled
+  session of the taper as the easiest thing in it — 5:06 is faster than that
+  athlete's marathon equivalent of 5:46. It now reads as `threshold`, which is
+  what 5:06 is for them.
+- **The goal race had the same fault.** Its card showed the marathon-pace number
+  for a race being entered at 5:06 — ~40 s/km wrong on the one session where the
+  number is the point. It carries `prescribedPace` now; its zone stays `marathon`,
+  because a race is a race and the card is already accented.
+
+**The test is the generalisation of the warm-up one.** For every session in a real
+plan: *the pace the card shows equals the pace its description names.* The card
+and the body must not state different numbers — that is the invariant, and it is
+the same one the "10 min warm-up" bug violated in distances.
+
+Both render sites in `plan_screen.dart` (the week-list card and the session
+sheet) read `workout.displayPace(paces)`. The zone *legend* in `review_screen.dart`
+iterates zones rather than workouts and is correctly unchanged — a legend has no
+session whose pace it could contradict.
+
 ## Zone anchor is CURRENT FITNESS, never the goal race pace — reversed
 
 **Found via a real report.** A runner with a 52:25 10K, a 1:56:10 half and a 49:00 10K goal — a
@@ -919,7 +964,7 @@ runner's target.
 ## Tests
 
 ```bash
-flutter test                                  # 626 unit + widget, mocked storage
+flutter test                                  # 630 unit + widget, mocked storage
 flutter test integration_test -d emulator-5554 # 12 on-device, REAL storage
 ```
 
@@ -1037,6 +1082,10 @@ Read `ui/theme.dart` before touching any screen. The rules that are easy to brea
   easy legs in *distance* because it is budgeted in distance. A test parses the numbers back out. A
   third copy of the old "10 min warm-up" string sat in `generate.dart` for a whole round because nobody
   checked the output.
+- **A session's pace is `workout.displayPace(paces)`, never `paces.forZone(workout.zone)`.** A zone is a
+  five-rung classification of a continuum and real prescriptions do not land on the rungs — a 51:00
+  10K is 5:06/km and the ladder had nothing at 5:06. Inferring it produced a card contradicting its own
+  description, on the taper's race-pace session and on the goal race.
 - **Riegel is optimistic at long distances.** `riiegel.conservativeMargin` is a deliberate, exposed
   heuristic. Do not remove it without replacing it.
 - **Beginner path contains zero quality sessions.** That is a safety property, asserted in

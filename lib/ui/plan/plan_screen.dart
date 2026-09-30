@@ -1208,7 +1208,10 @@ class _SessionCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isRest = workout.type == WorkoutType.rest;
-    final pace = paces.forZone(workout.zone);
+    // The session's own pace, not one inferred from its zone. A session
+    // prescribed off-ladder — the taper's race-pace set, the goal race — would
+    // otherwise show a number its own description contradicts.
+    final pace = workout.displayPace(paces);
     final isRace = workout.type == WorkoutType.race;
 
     return Material(
@@ -1474,7 +1477,9 @@ class _SessionSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final pace = paces.forZone(workout.zone);
+    // Same rule as the card in the week list: the session's own pace, never one
+    // inferred from its zone.
+    final pace = workout.displayPace(paces);
     final zoneColor = ZonePalette.of(workout.zone);
 
     return SafeArea(

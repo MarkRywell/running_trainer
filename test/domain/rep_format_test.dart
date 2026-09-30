@@ -804,6 +804,76 @@ void main() {
         }
       }
     });
+
+    test('and the pace it shows is the pace its body names', () {
+      // The card used to derive its number from the session's *zone*, which is a
+      // five-rung classification of a continuum. Real prescriptions do not land
+      // on the rungs: a 51:00 10K is 5:06/km, and the ladder had threshold at
+      // 5:09 and interval at 4:53 — nothing at 5:06. So the card said one number
+      // and the description said another, on the session where it matters most.
+      for (final plan in [
+        _withGoal(),
+        _noGoalPlan(),
+        _k10Goal(),
+      ]) {
+        for (final w in plan.weeks) {
+          for (final s in w.workouts) {
+            if (s.type == WorkoutType.rest) continue;
+            final named = _secondsPerKmIn(s.description);
+            if (named == null) continue;
+            expect(
+              s.displayPace(plan.paces).secPerKm,
+              named,
+              reason: 'week ${w.weekNumber}: ${s.title} shows '
+                  '${s.displayPace(plan.paces).format()} and names '
+                  '${named ~/ 60}:${(named % 60).toString().padLeft(2, '0')}',
+            );
+          }
+        }
+      }
+    });
+
+    test('a session prescribed off-ladder states its pace explicitly', () {
+      // Scoped to the race-pace set and the race itself. A *mid-taper* tempo is
+      // prescribed at threshold, which is on the ladder, so it correctly has no
+      // explicit pace — the field is for the sessions zones cannot express.
+      for (final plan in [_k10Goal(), _withGoal()]) {
+        for (final w in plan.weeks) {
+          for (final s in w.workouts) {
+            if (!s.title.startsWith('Goal-pace')) continue;
+            expect(s.prescribedPace, isNotNull,
+                reason: 'week ${w.weekNumber}: ${s.title} has no explicit '
+                    'pace, so its card falls back to a zone that does not '
+                    'contain it');
+            expect(s.repZone, s.zone,
+                reason: 'the reps and the session should classify the same');
+          }
+        }
+      }
+    });
+
+    test('the goal race shows the goal pace, not the marathon-pace number', () {
+      final plan = _k10Goal(goalTime: const Duration(minutes: 51));
+      final race = plan.weeks.last.workouts
+          .firstWhere((s) => s.type == WorkoutType.race);
+      expect(race.prescribedPace, isNotNull);
+      expect(race.prescribedPace!.secPerKm, closeTo(306, 2),
+          reason: '51:00 over 10 km is 5:06/km; the card used to show the '
+              'marathon-pace equivalent, which is ~40 s/km slower');
+      expect(race.displayPace(plan.paces).secPerKm, race.prescribedPace!.secPerKm);
+    });
+
+    test('a session at a zone still shows that zone pace', () {
+      // The fallback must stay the common case, or every tempo and long run would
+      // need an explicit pace and the field would be pointless.
+      final plan = _withGoal();
+      final tempo = plan.weeks
+          .expand((w) => w.workouts)
+          .firstWhere((s) => s.type == WorkoutType.tempo);
+      expect(tempo.prescribedPace, isNull);
+      expect(tempo.displayPace(plan.paces).secPerKm,
+          plan.paces.threshold.secPerKm);
+    });
   });
 
   group('every build week keeps its speed session', () {
@@ -982,6 +1052,15 @@ TrainingPlan _withGoal({
       profile: _noGoalRunner(km: weeklyKm),
       races: _races(),
       goal: goal(RaceDistance.half, finishTime: goalTime, inWeeks: 16),
+      startDate: testToday,
+    );
+
+/// A 10K block, where the goal pace is furthest from any zone on the ladder.
+TrainingPlan _k10Goal({Duration goalTime = const Duration(minutes: 51)}) =>
+    generate(
+      profile: _noGoalRunner(),
+      races: _races(),
+      goal: goal(RaceDistance.k10, finishTime: goalTime, inWeeks: 16),
       startDate: testToday,
     );
 

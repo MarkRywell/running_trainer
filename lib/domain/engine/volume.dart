@@ -659,6 +659,7 @@ PlanWeek enforceSafety(PlanWeek week) {
             targetDuration: cappedDistance == 0 ? w.targetDuration : null,
             isQuality: w.isQuality,
             hardFractionOfDistance: w.hardFractionOfDistance,
+            prescribedPace: w.prescribedPace,
           ),
           w.weekday ?? 0,
         )

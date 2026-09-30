@@ -307,6 +307,7 @@ PlanWeek _raceWeek(
   List<int> pattern,
 ) {
   final raceKm = goal.distance.metres / 1000;
+  final goalPace = Pace.fromDuration(goal.finishTimeGoal, goal.distance.metres);
   // The race takes the plan's last run day, the shakeout its first, and the
   // rest whatever day falls between them. A session log needs all three placed.
   final raceDay = pattern.isEmpty ? 7 : pattern.last;
@@ -337,12 +338,17 @@ PlanWeek _raceWeek(
       ).withWeekday(restDay),
       Workout(
         title: goal.distance.label,
-        type: WorkoutType.race,
         zone: IntensityZone.marathon,
         distanceKm: raceKm,
         targetDuration: goal.finishTimeGoal,
         isQuality: true,
         weekday: raceDay,
+        // The card used to show the marathon-pace number for a race the runner
+        // is entering at their goal pace — 40 s/km out for a 10K goal, on the one
+        // session where the number actually matters. Same fault as the taper
+        // set: a pace inferred from a zone rather than stated.
+        prescribedPace: goalPace,
+        type: WorkoutType.race,
         description:
             'Your goal race. Start controlled — the first 5 km slower than '
             'feels right — and move up only when the pace is effortless.',
@@ -1166,7 +1172,13 @@ Workout _taperWorkout(
   return Workout(
     title: 'Goal-pace ${_formatRepDistance(format.distanceM!)} reps',
     type: WorkoutType.intervals,
-    zone: format.zone,
+    // The zone describes the *effort*, so it is the nearest rung to the pace
+    // actually being run rather than the one the format was authored with. For a
+    // 10K goal at 5:06/km that is threshold, not marathon — labelling the hardest
+    // session of the taper as `marathon` painted it as the easiest thing in the
+    // week, on a card that also says 5:06 in its own description.
+    zone: paces.nearestZone(pace),
+    prescribedPace: pace,
     distanceKm: distanceKm,
     targetDuration: paces.easy.overDistance(distanceKm * 1000),
     isQuality: true,
@@ -1174,7 +1186,10 @@ Workout _taperWorkout(
     reps: reps,
     repDistanceM: format.distanceM,
     repRecovery: format.recovery,
-    repZone: format.zone,
+    // Same reasoning as `zone`: the reps are run at the prescribed pace, so the
+    // rung that classifies them is the nearest one, not the rung the format
+    // happens to be authored with.
+    repZone: paces.nearestZone(pace),
     description: [
       'The last hard running you do before ${goal.distance.label}.',
       'Easy for ${_formatDistance(warmUpKm)}, then $reps x '
