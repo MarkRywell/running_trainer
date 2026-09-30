@@ -24,7 +24,7 @@ class RunningTrainerApp extends StatelessWidget {
     return AnimatedBuilder(
       animation: controller,
       builder: (context, _) => MaterialApp(
-        title: 'AI Running Trainer',
+        title: 'Running Trainer',
         debugShowCheckedModeBanner: false,
         theme: AppTheme.dark(),
         home: controller.hasPlan

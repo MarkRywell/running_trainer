@@ -66,7 +66,7 @@ experience, so the runner decides the plan changes. A silent rewrite is nagging 
 
 ## App name
 
-User-visible name is **AI Running Trainer**, and it is set in five places, not one:
+User-visible name is **Running Trainer**, and it is set in five places, not one:
 `web/manifest.json`, `android/app/src/main/AndroidManifest.xml` (`android:label`),
 `ios/Runner/Info.plist` (`CFBundleDisplayName` + `CFBundleName`),
 `windows/runner/Runner.rc` (`FileDescription` + `ProductName`), and
