@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <!--
+    Was the Flutter template's "A new Flutter project." The pubspec description
+    is the project's own copy, so the two must not drift.
+  -->
+  <meta name="description" content="A running training plan built for your current fitness, that adapts when it needs to.">
+  <meta name="theme-color" content="#0E0D0D">
+
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="AI Running Trainer">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <!--
+    Was <title>ai_running_trainer</title> - the DART PACKAGE name, not the app
+    name. The package is deliberately still ai_running_trainer and must not be
+    renamed, but it is not a user-visible string; this is what shows in the
+    browser tab and in the installed PWA's name. Sixth place the app name lives,
+    alongside web/manifest.json, AndroidManifest.xml, Info.plist and Runner.rc.
+  -->
+  <title>AI Running Trainer</title>
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      /* Matches AppColors.base. Also the colour the Flutter canvas is cleared
+         to, so there is no white flash between this and the first frame. */
+      background-color: #0E0D0D;
+      overscroll-behavior: none;
+    }
+
+    /*
+      Launch splash.
+      The web build has no platform splash screen of its own, so without this the
+      runner stares at a blank dark rectangle for however long the engine takes
+      to boot - long enough on a phone to read as a broken page.
+
+      Removed on Flutter's `flutter-first-frame` event rather than a fixed
+      delay, so it can never linger over a running app. The timeout is a
+      backstop: if the event does not arrive the splash is removed anyway,
+      because a splash that covers a working app is worse than no splash.
+    */
+    #splash {
+      position: fixed;
+      inset: 0;
+      z-index: 2147483647;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background-color: #0E0D0D;
+      transition: opacity 260ms ease-out;
+    }
+    #splash.fade { opacity: 0; pointer-events: none; }
+    #splash img {
+      width: 40vw;
+      max-width: 220px;
+      min-width: 110px;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+  <div id="splash">
+    <img src="icons/splash-logo.png" alt="AI Running Trainer">
+  </div>
+
+  <script src="flutter_bootstrap.js" async></script>
+
+  <script>
+    (function () {
+      var splash = document.getElementById('splash');
+      if (!splash) return;
+
+      var done = false;
+      function dismiss() {
+        if (done) return;
+        done = true;
+        splash.classList.add('fade');
+        // Remove after the transition, so the element can never intercept taps.
+        setTimeout(function () { splash.remove(); }, 300);
+      }
+
+      window.addEventListener('flutter-first-frame', dismiss);
+      // Backstop only. See the comment above: never leave the splash up.
+      setTimeout(dismiss, 8000);
+    })();
+  </script>
+</body>
+</html>
