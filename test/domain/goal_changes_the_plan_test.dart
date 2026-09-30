@@ -177,9 +177,15 @@ void main() {
       }
       expect(
         firstDivergence,
-        4,
-        reason: 'weeks 1-4 are the shared base build; the goal block diverges '
-            'from week 5. If this moved, the "nothing changed" report is back.',
+        5,
+        reason: 'weeks 1-5 are the shared base build; the goal block diverges '
+            'from week 6. If this moved, the "nothing changed" report is back.\n\n'
+            'This was 4 until a phantom tempo was removed from the base block\'s '
+            'cutback weeks: `_baseWeek` computed a tempo distance and then '
+            'suppressed the session that would have used it, so every base '
+            'cutback under-prescribed by one tempo and the two blocks disagreed '
+            'on week 5. The test was pinning that. Fixing it lengthened the '
+            'shared prefix by a week rather than shortening it.',
       );
     });
   });

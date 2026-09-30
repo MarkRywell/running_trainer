@@ -155,6 +155,18 @@ double qualityDistanceKm(double targetVolume) {
 /// Shortest a quality session may be, in km.
 const double minQualityKm = 5.0;
 
+/// Share of its usual length a lone quality session is cut to by `drop-quality`.
+///
+/// Only applies where the week has **one** quality session — three and four days
+/// a week. With two, the directive removes them outright and this is not used.
+///
+/// Shortening rather than removing is what keeps the directive from being
+/// all-or-nothing: a runner on three days has a choice between "my hard session,
+/// shorter" and "no hard running at all", and the proposal's own words are "you
+/// keep all the running, you lose the part that is not working". Deleting the
+/// session would make that last part the whole of it.
+const double suppressedQualityScale = 0.6;
+
 /// Longest a single quality session may be, in km.
 ///
 /// Fifteen is not a comfortable number on its own — it is the *ceiling*, and
@@ -235,6 +247,7 @@ const int cutbackEveryBeginner = 4;
 /// passing through it. The final pre-race week is the one the runner actually
 /// races in, so that is the week the number is anchored on.
 const Map<int, List<double>> taperSchedule = {
+  1: [0.45],
   2: [0.55, 0.45],
   3: [0.60, 0.50, 0.42],
 };
@@ -630,6 +643,11 @@ PlanWeek enforceSafety(PlanWeek week) {
         // place a field list is still written out by hand; it is safe only
         // because a long run is never a rep session. Anything else rebuilt this
         // way must go through [Workout.withWeekday] instead.
+        //
+        // The hard fraction is re-derived from the *capped* distance, because
+        // the specific phase's goal-pace block is a share of the run: trim the
+        // run and the block shrinks with it, and carrying the old fraction would
+        // overstate the hard distance on exactly the weeks that were trimmed.
         _withWeekday(
           Workout(
             title: w.title,

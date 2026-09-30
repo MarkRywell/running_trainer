@@ -32,11 +32,11 @@ const _runner = RunnerProfile(
   estimatedWeeklyKm: 45,
 );
 
-GoalRace _goal() => GoalRace(
+GoalRace _goal({int daysPerWeek = 4}) => GoalRace(
       distance: RaceDistance.marathon,
       date: testToday.add(const Duration(days: 18 * 7)),
       finishTimeGoal: const Duration(hours: 3, minutes: 30),
-      daysPerWeek: 4,
+      daysPerWeek: daysPerWeek,
     );
 
 List<RaceResult> _races() => [
@@ -47,11 +47,14 @@ List<RaceResult> _races() => [
       ),
     ];
 
-TrainingPlan _plan({PlanDirective directive = const PlanDirective()}) =>
+TrainingPlan _plan({
+  PlanDirective directive = const PlanDirective(),
+  int daysPerWeek = 4,
+}) =>
     generate(
       profile: _runner,
       races: _races(),
-      goal: _goal(),
+      goal: _goal(daysPerWeek: daysPerWeek),
       startDate: testToday,
       directive: directive,
     );
@@ -424,7 +427,7 @@ void main() {
       expect(propose(progress).map((p) => p.id), isNot(contains('drop-quality')));
     });
 
-    test('the directive removes quality work and keeps the volume', () {
+    test('the directive cuts hard work and keeps the volume', () {
       final with_ = _plan();
       final without =
           _plan(directive: const PlanDirective(suppressQuality: true));
@@ -434,24 +437,13 @@ void main() {
       bool hasTraining(PlanWeek w) => w.workouts
           .any((s) => isQualityType(s.type) && s.type != WorkoutType.race);
 
-      // The taper is the one exemption. Its goal-pace session is the whole point
-      // of the phase, and at three days a week suppressing it would leave a
-      // runner arriving for their goal race with no hard running in three weeks.
-      // So the assertion is "nothing survives *outside* the taper", not "nothing
-      // survives at all" — which is what it used to say, and which is why the
-      // exemption would otherwise have looked like the directive failing.
-      final surviving = without.weeks
-          .where((w) => w.phase != PlanPhase.taper && hasTraining(w))
-          .toList();
-      expect(surviving, isEmpty,
-          reason: 'weeks ${surviving.map((w) => w.weekNumber)} kept hard work');
-      expect(with_.weeks.any(hasTraining), isTrue);
+      // This fixture is a four-day week, which is the **shortening** case: the
+      // week has exactly one quality session, so removing it would leave nothing
+      // hard at all and the runner no middle option. The session is kept and cut
+      // to [suppressedQualityScale].
+      expect(without.weeks.any(hasTraining), isTrue,
+          reason: 'a one-session week must keep a session, just a shorter one');
 
-      // What must hold: the hard work is what disappears. Total mileage may move
-      // a couple of percent either way, because the unsuppressed week loses
-      // volume to the cap that keeps the quality session shorter than the long
-      // run, and redistributing it onto easy days recovers some of that. The
-      // safety property is that everything the week gains is easy.
       for (var i = 0; i < with_.weeks.length; i++) {
         if (with_.weeks[i].phase == PlanPhase.raceWeek) continue;
         final before = with_.weeks[i];
@@ -464,18 +456,66 @@ void main() {
             before.phase == PlanPhase.raceWeek) {
           continue;
         }
-        expect(after.hardVolumeKm, 0,
-            reason: 'week ${before.weekNumber} still prescribes hard running');
         expect(before.hardVolumeKm, greaterThan(0),
-            reason: 'week ${before.weekNumber} had no hard work to remove');
+            reason: 'week ${before.weekNumber} had no hard work to cut');
+        expect(after.hardVolumeKm, lessThan(before.hardVolumeKm),
+            reason: 'week ${before.weekNumber} did not get easier');
+        // Never a token session: cutting to 60% must leave real work behind.
+        expect(after.hardVolumeKm, greaterThan(before.hardVolumeKm * 0.4),
+            reason: 'week ${before.weekNumber} was cut to a stub');
 
         final drift = (after.targetVolumeKm - before.targetVolumeKm) /
             before.targetVolumeKm;
+        // Volume may move either way, and the bound is loose because the drift
+        // is real: a solved rep set stops at its format's ceiling rather than
+        // filling the quality budget, so an unsuppressed week can already
+        // prescribe less than the volume curve asked for, and the easy days
+        // cannot reclaim it because they are capped against a long run that is
+        // itself still growing.
+        //
+        // The invariant that matters is above: the week got *easier* and it kept
+        // a session. Volume may never move by a quality session's worth in a
+        // week that has no quality session at all.
         expect(
           drift.abs(),
-          lessThan(0.10),
+          lessThan(0.15),
           reason: 'week ${before.weekNumber} moved ${(drift * 100).round()}%',
         );
+      }
+    });
+
+    test('where the week has two hard sessions, they are removed outright', () {
+      // Removal is right there and shortening is not: dropping both still leaves
+      // a week of running that is simply an easy one.
+      //
+      // The rule keys on the *session count*, not the day count — base phases
+      // carry one quality session at five and six days too, and they shorten.
+      final with_ = _plan(daysPerWeek: 5);
+      final without = _plan(
+          daysPerWeek: 5,
+          directive: const PlanDirective(suppressQuality: true));
+      final twoSession =
+          with_.weeks.where((w) => w.qualityCount == 2).toList();
+      expect(twoSession, isNotEmpty,
+          reason: 'a five-day week should carry two hard sessions somewhere');
+
+      for (final before in twoSession) {
+        // The taper is exempt from the directive by design — its race-pace
+        // session is the point of the phase — so it keeps its work.
+        if (before.phase == PlanPhase.taper) continue;
+        final after = without.weeks[before.weekNumber - 1];
+        expect(after.hardVolumeKm, 0,
+            reason: 'week ${before.weekNumber} (${before.phase.name}) kept '
+                'hard running');
+      }
+    });
+
+    test('a cutback stays 100% easy, because that is what a deload is', () {
+      final without =
+          _plan(directive: const PlanDirective(suppressQuality: true));
+      for (final w in without.weeks.where((w) => w.isCutback)) {
+        expect(w.hardVolumeKm, 0,
+            reason: 'cutback week ${w.weekNumber} prescribed hard running');
       }
     });
 

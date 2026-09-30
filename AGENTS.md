@@ -9,7 +9,7 @@ Only third-party dependency is `shared_preferences`; the typeface is bundled, no
 
 ```bash
 flutter pub get
-flutter test                        # 542 unit + widget, mocked storage
+flutter test                        # 626 unit + widget, mocked storage
 flutter test integration_test -d emulator-5554   # 12 on-device, REAL storage
 flutter analyze                     # must be clean
 flutter build web --release
@@ -243,14 +243,25 @@ Still open, unchanged by this fix:
 
 - **The week view does not say when a plan has no hard sessions**, so a beginner route reads as a
   design choice rather than a routing outcome. This is what made the bug invisible to the runner.
-- **`suppressQuality` is blunt at 3 days a week**, where the tempo is the only quality session — the
-  taper is now exempt, but a cutback at three days is still all-easy. The beginner-block "zero quality
-  is safe" property covers a *starting* block, not an end state for a trained runner.
+- **`suppressQuality` is blunt at 3 days a week** — resolved: it now shortens a lone
+  quality session rather than deleting it. See "drop-quality has two shapes".
+- **Nothing surfaces the volume ceiling.** A runner at 45 km/week peaks at `45 × 1.35` and then watches
+  volume flatten for weeks with no explanation. The plan is behaving correctly; the runner is not told.
+  `_impliedVolume` already discloses "we are guessing your mileage" — the equivalent note for "you have
+  maxed out" does not exist.
+- **A short block still gets a periodised shape it has not earned.** A 9-week 10K block is told it is
+  building toward a peak. It is closer to maintenance-plus-taper, and while the "Only N weeks to race
+  day" flag says so, the phase labels do not.
+- **A cutback can still land in a short race-specific phase and empty it.** Now that cutbacks are 100%
+  easy in every phase again, a two-week specific phase can hand its only rep week to a deload. The fix
+  is to *place* cutbacks — skip one when the phase it would land in is only two weeks long — not to
+  exempt a phase from deloading. See "A cutback is a deload in every phase".
 
-Resolved since, in "Rep formats and a real taper":
+Resolved since, in "Rep formats and a real taper" and "A rep count is a training decision":
 
 - ~~Without a goal race, intervals are structurally unreachable.~~
 - ~~No 400m or 1000m rep formats.~~
+- ~~The taper has no quality session at all.~~
 
 ## Rep formats, and a taper that keeps its intensity
 
@@ -327,6 +338,277 @@ volume.
   taper test an hour later.
 
 `test/domain/rep_format_test.dart` and `test/domain/taper_methodology_test.dart` are the guards.
+
+## A rep count is a training decision, not a budget fill
+
+**Found via a real report, second round.** The same runner, after the fixes above, sent back the plan the
+app produced. Three of its complaints were about arithmetic that was *faithful to the code* and wrong
+anyway — which is the more interesting kind of bug, because "it's calculated" is the answer that stops
+anyone looking further.
+
+- *"The 800m reps on W4 has a bit too many reps."* Nine of them, and the code asked for exactly nine: the
+  rep count was **the largest set that fits 22% of the week's volume**. On a 54.7 km week that is 12 km,
+  and 800m reps go in until the space is full. **Nothing in that arithmetic represents a decision about
+  how many reps to run.** A rep count is a training judgement; filling a volume space is not one.
+  Ceilings are now 400m→12, 800m→6, 1km→5, 2km→3, and `solveSet` can only ever *shorten* a set.
+- *"Taper week has no speed session."* Taper length was `totalWeeks >= 12 ? 3 : 2` — the same question
+  asked of a 10K and a marathon, and the same answer given. It is now keyed on **race distance**, via
+  `taperWeeksFor`: 5K/10K get one week, half/marathon two, or three when the block is long enough to
+  have earned them.
+- *"The goal pace is 5:49/km but my goal is 51:00, which is 5:06."* The copy said "your goal pace" while
+  reading `paces.marathon`, which is the **fitness** anchor. For a marathon goal the two nearly
+  coincide, which is why this survived a full test suite. For a 10K they were 40 s/km apart.
+
+**The taper's pace is the one place the goal is allowed to appear.** Every other zone is fitness-anchored
+precisely so a stretch goal cannot raise intensity above what the athlete has demonstrated
+(`zone_anchor_regression_test`). `taperRepPace` reverses that for the race-pace session, floored at the
+**repetition** pace rather than the marathon one: rehearsing the race pace *is* that session's
+prescription, it happens once, and the goal has already been checked for plausibility by `validate`.
+The floor still exists so a fantasy goal cannot produce a session faster than anything the athlete has
+been asked to run. **The copy says which of the two it prescribed** — "your goal pace" or "your current
+marathon pace" — because a runner told one and handed the other has been told something false.
+
+**Race-specific work is threshold work. Only peak is fast.** The zone was baked into `RepFormat`, so a
+10K athlete's race-specific phase prescribed 800m at interval pace — *faster* than both their threshold
+and their goal pace. That is 5K-effort work sitting in the phase meant to prepare them for a 10K, and
+it left peak as the only place with anything sharper. `repZoneForPhase` now owns the zone, and the test
+parses the pace back out of the description so a relabelled zone cannot pass.
+
+## The card has to say what the session is
+
+**Every quality session in the app was ~12 minutes longer than its own card claimed.** The copy
+described the warm-up and cool-down in *minutes*; the session was budgeted in *kilometres*, so the easy
+legs inflated to fill whatever was left. A 10.4 km tempo read "10 min warm-up … 5 min cool down" and
+prescribed 27 minutes of easy.
+
+This matters more than a copy bug. A runner asked for more than the card says cannot tell that is what
+is happening, and **"it feels like too much" is not a report anyone files** — it just becomes a reason to
+stop running the session. The tempo and every set now name the easy legs in distance, and a test asserts
+the named distances sum to the session. The test found a *third* copy of the old string in
+`generate.dart`, which is the argument for asserting on output instead of reading the source.
+
+## Two more faults in the specific phase, both pre-existing
+
+- **The goal-pace block in a race-specific long run reported `hardFractionOfDistance: 0`.** A 15.6 km
+  specific long run with 5 km at marathon pace is 33% hard and the app called it 0%, so `hardVolumeKm` —
+  and therefore the 80/20 invariant the whole plan is built to satisfy — was computed on a plan that hid
+  its own race-specific work. `longRunHardFraction` derives it, and re-derives on a trimmed run, because
+  the block is a share of the run.
+- **A cutback could empty a short phase.** `allocatePhases` splits by percentage and `isCutbackWeek`
+  then lands wherever it lands, so a 2-week specific phase could hand its only rep week to a cutback. The
+  reported plan's week 5 was exactly that: the phase meant to prepare a runner for their 10K contained
+  no race-specific work. Deload now exempts specific and peak. **Base is deliberately still exempt** —
+  dropping a deload's tempo is the entire point of a deload.
+
+## A 10K taper week has no long run
+
+Not a copy change: a different week shape. At 5K and 10K there is no glycogen debt to clear and no
+race-specific durability to build, so the long run's only remaining job in the taper week is to be the
+biggest thing in it — the opposite of the point. The week's volume goes into short easy runs and one
+sharp session instead.
+
+Two things this exposed, both of which would have shipped quietly:
+
+- **A week with no long run has one *more* easy day, not one fewer.** The long run was the day that is
+  not easy; removing it returns a day to the pool.
+- **The taper session was budgeted from the long run, so a zero long run meant a zero budget** — and the
+  taper's one hard session silently collapsed to a single rep. A token session is the exact opposite of
+  the point. With no long run it is sized as a share of the week, under the same 8 km ceiling, and easy
+  days get `maxTaperEasyRunKm` since there is no long run for them to stay under.
+
+## `allocatePhases` takes a required goal, on purpose
+
+`goal` defaulted to null, and null meant **zero taper weeks** — a race block with no taper at all,
+produced by a caller who simply forgot. It is required now. A parameter whose absence silently removes a
+phase is a trap, not a default.
+
+## Three bugs of my own, from this round
+
+Worth recording because two of them were found by tests written *for* the change and still got through:
+
+- **The redistribution fix that wasn't.** A solved set now lands under its budget, the easy days are
+  capped against a long run that is itself still growing, and the week came out 9% short of the volume
+  curve. I put the remainder on the long run — which **breached the long-run growth limit**, because
+  `capLongRunGrowth` measures against *last* week's long run and I was calling it from inside `_buildWeek`
+  with this week's. Reverted. The honest behaviour is to prescribe the smaller week and let
+  `enforceSafety` report what was actually prescribed, not to break a growth limit to make arithmetic
+  come out. The test that caught it was asserting a limit I had just edited the code around.
+- **A stretch-goal test with a 40-minute half marathon in it.** I meant "an ambitious goal" and typed a
+  10K time. It "proved" a session ran 3:41/km, which was the repetition floor doing its job on a
+  nonsense input. A test that passes for the wrong reason is worse than one that fails.
+- **`maxRepsFor` inferred the ceiling from a generated plan.** A 120 km week's 2km set only reaches 2
+  reps, so the helper reported the ceiling as 2 and the assertion against 3 failed — correctly, for the
+  wrong reason. The ladder is now readable via `repFormatFor`.
+
+**One bound was loosened rather than the code changed, and it is worth being explicit about.**
+`suppressQuality` now moves a week's volume up to 15% rather than 10%. That is real: a set stops at its
+ceiling instead of filling its budget, so an unsuppressed week prescribes *less* than the curve intended,
+and the easy days cannot reclaim it. The invariant that actually matters — everything the week gains is
+easy — is unchanged and still asserted. Volume may move either way; it just may not move by a quality
+session's worth in a week that has no quality session.
+
+## Three days a week is easy, speed, long
+
+**The recovery run was on the wrong side of the long run.** It carried the
+description *"Deliberately slow. Absorb the long run, do not add to it."* — and
+at three days a week the pattern is `[1, 3, 6]`, so that card sat on the
+**Monday before** the Saturday long run. It was absorbing nothing, and the copy
+said so out loud on the wrong day.
+
+| days | pattern | long run | first run day | gap |
+|---|---|---|---|---|
+| 3 | `[1,3,6]` | **Sat** | Mon | Sunday is already free |
+| 4 | `[1,3,5,7]` | **Sun** | Mon | **none** |
+| 5 | `[1,2,4,6,7]` | **Sun** | Mon | **none** |
+| 6 | `[1,2,3,4,6,7]` | **Sun** | Mon | **none** |
+
+So the recovery day is *earned* at four or more and pure cost at three. At three
+it is also a third of the week's runnable days spent **below** easy pace, which
+is the one pace that builds nothing. A three-day week is now
+`Easy / quality / long run`, which is what the beginner block has always done —
+`_easyRun` for every non-long day, never a recovery day. The trained path was the
+odd one out.
+
+**The gate is the pattern, not a day count.** `longRunFollowsImmediately(pattern)`
+asks whether the weekday after `pattern.last` is also a run day. Keyed on the
+day count it would be a magic number that silently breaks the next time
+`weeklyDayPattern` changes; keyed on the pattern it states the reason.
+
+**The swap is zone-only, and that is checked.** Same `distanceKm`, same
+`easyRunCapKm` cap, and recovery and easy are both `isEasy`, so `easyFraction`
+and the long-run share cannot move. A test asserts the week still sums and that
+neither zone escapes the easy classification.
+
+The three-day easy card carries an explicit permission slip — *"if the long run
+wrecked you, go slower"* — because the safety valve has to be **on the card**,
+not merely intended. A runner who is genuinely cooked after a long run needs to
+know they may.
+
+## A week can never budget a session it has no day for
+
+`qualitySlots` returned indices from a fixed candidate list without checking
+them against the week length, so `qualitySlots(2, 1)` returned `[3]` for a week
+whose only positions are 0 and 1. The caller built the session, subtracted its
+distance from the easy budget, and then had no loop iteration that could place
+it — the same **budget-then-drop** fault as the four-day case, at the other end
+of the range. Two days is unreachable through `generate()` (both generators clamp
+to 3–6) but the function is public and takes a pattern directly.
+
+The slot list is now **authoritative**: `_buildWeek` asks for what the week
+*wants*, then sets `qualityCount = slots.length`. A week cannot budget a hard
+session it has nowhere to put, and it returns fewer than asked rather than
+pretending.
+
+**Found by an existing test that was pinning a bug.** `goal_changes_the_plan_test`
+asserted the goal block diverges from the base block at week index 4, and it now
+diverges at 5. The cause was not the 3-day change: `_baseWeek` computed a tempo
+distance and then suppressed the session that would have used it, so **every base
+cutback under-prescribed by one tempo's length** while the race block — which
+budgeted from the sessions it had actually built — did not. The two blocks
+therefore disagreed on week 5 for a reason nobody had intended. Removing the
+phantom tempo *lengthened* the shared prefix by a week. `qualitySlots` in
+`_baseWeek` replaced a hardcoded `i == 1`, so the two paths now derive placement
+from one function.
+
+## Every build week keeps its speed session
+
+The runner's own requirement: **a three-day week is easy / speed / long, and the
+speed session is definitely there.** Enforced as an invariant test across 3–6
+days and both trained paths.
+
+One interpretation is recorded deliberately: **a cutback stays quality-free.** A
+deload exists to absorb training, and putting a tempo in it removes the reason it
+exists — it would also break the beginner block's "zero quality is safe" property
+that `plan_test.dart` pins. So base cutbacks are excluded from the invariant and
+every other build week carries one.
+
+**Still not fixed, and sharper because of this:** `suppressQuality` at three days
+a week. With three sessions, suppressing the one quality session leaves a week
+that is entirely easy for the length of the coach proposal. The taper is exempt;
+this bites in the build. It needs its own decision — probably that a three-day
+runner's proposal *downgrades* quality rather than removing it — and was left out
+of this change rather than folded in.
+
+## Three days a week is a choice, and the app says so out loud
+
+**A runner on three days gets one quality session, and for a lot of athletes that
+is correct.** A VDOT 38 runner, three days, one threshold session a week is a
+complete and sustainable arrangement — and the runner it came from described it
+that way. Treating three days as a deficiency would be nagging about a sound
+setup, which is the one thing this app exists not to be.
+
+So the intervention is **disclosure, not prescription**:
+
+- `_validateFrequencyAgainstFitness` fires at **three days and VDOT ≥ 45**. Both
+  numbers are known and nothing was saying anything. `FlagSeverity.info`, and it
+  never touches the plan — asserted by comparing week shape across two athletes
+  of different fitness.
+- **Four days does not fire, at any fitness.** Four days with one hard session is
+  a normal arrangement.
+- `minimumVdotsForTwoSessions` is a judgement, not a source, in one named
+  constant. It sits above this codebase's existing beginner/trained boundary
+  (VDOT ~35, from `defaultBeginnerMarathonEquivalentSecPerKm`).
+
+**It is raised before `validate`'s `goal == null` return on purpose.** Everything
+else in that function is about a goal, so a runner with nothing on the calendar is
+the one most likely to be under-stimulated and least likely to be told.
+
+**The day count had to be hoisted into `generate`.** It was resolved separately
+inside the race block and the base block, both *after* validation had run, so the
+frequency check had nothing to work with. One `resolveDaysPerWeek` now feeds all
+three.
+
+### What was deliberately *not* changed
+
+The premise for changing the prescription at three days was that a fast runner on
+three days is under-stimulated. The ladder already answers it: `_qualitySessionsFor`
+gives `wantsSet = true` in **peak**, and the specific phase alternates tempo and
+set. A three-day runner gets sets from about week 4 without being told to. The
+only thing three days cannot fix is *frequency*, and no plan change fixes that —
+only a fourth day does, which is the flag's whole job.
+
+A test pins it, because "we decided not to change this" is exactly the kind of
+decision that gets quietly reversed by a later contributor.
+
+## `drop-quality` has two shapes, and which one applies is structural
+
+The proposal said "this removes the hard sessions" and it did, at every day count
+— so a **three-day week became 100% easy**, and a four-day week with two
+remaining days of running became 100% easy. The runner had no middle option
+between "my hard session" and "no hard running at all", while the proposal's own
+words were *"you keep all the running, you lose the part that is not working."*
+
+- **One quality session in the week** (three and four days; and every *base* week
+  at any day count, since base has one) → **shorten it** to
+  [suppressedQualityScale], which is 60%. One knob, and both session types
+  respond: a tempo gets shorter, and a set gets fewer reps because `solveSet`
+  solves to whatever room it is given.
+- **Two quality sessions** (five and six days in specific and peak) → removed
+  outright, as before. Dropping both still leaves a week of running that is simply
+  an easy one, which is a proportionate response.
+
+The rule keys on **session count, not day count** — an earlier framing said "that's
+three and four days" and was incomplete, because base weeks have one session at
+five and six too. The coefficient, the test that a shortened session is not a
+token (>40% of the original hard volume), and the proposal copy all follow from
+the one rule.
+
+## A cutback is a deload in **every** phase
+
+There was a period where specific and peak were exempted from cutbacks, so that a
+two-week phase could not lose its only rep week to one. That made cutbacks do two
+contradictory things at once, and **"keep the hard work" is not a deload under any
+reading of the word**. The runner's instruction was unambiguous: a cutback is
+100% easy, to absorb the weeks before it.
+
+The risk that exemption was papering over is real and is now **visible rather
+than hidden**: `allocatePhases` splits by percentage and `isCutbackWeek` lands
+wherever it lands, so on a short block a cutback can fall in the race-specific
+phase and leave it without a rep week. **The fix for that is to place the cutback,
+not to exempt a phase from deloading** — and it is not done yet.
+
+The `>=1 quality session` invariant therefore covers *common* weeks and exempts
+all cutbacks, which is what "common" was always meant to mean.
 
 ## Zone anchor is CURRENT FITNESS, never the goal race pace — reversed
 
@@ -637,8 +919,8 @@ runner's target.
 ## Tests
 
 ```bash
-flutter test                                  # 288 unit + widget, mocked storage
-flutter test integration_test -d emulator-5554 # 4 on-device, REAL storage
+flutter test                                  # 626 unit + widget, mocked storage
+flutter test integration_test -d emulator-5554 # 12 on-device, REAL storage
 ```
 
 `integration_test/persistence_test.dart` deliberately does **not** mock SharedPreferences. It writes
@@ -743,8 +1025,18 @@ Read `ui/theme.dart` before touching any screen. The rules that are easy to brea
 - **`Workout.hardFractionOfDistance` exists because 80/20 is otherwise unreachable.** A tempo is
   mostly easy by distance. Without it, one quality session counts as a third of the week at
   threshold.
-- **Zone anchor is the goal race pace, not predicted current fitness.** Current fitness is only used
-  to *validate* the goal. See `engine/zones.dart`.
+- **Zone anchor is CURRENT fitness, not the goal race pace.** This line was wrong here for a long time
+  and contradicted the section above it. `zoneAnchorPace` ignores `goalDistance` and `goalFinishTime`
+  entirely; the goal shapes block length, volume, taper and race-week pacing, never a training pace.
+  **The one exception is the taper's race-pace session** (`taperRepPace`), which is goal-anchored by
+  design and floored at the repetition pace. Do not "fix" that one back.
+- **A rep set's zone comes from its phase, not from its rep distance.**
+  `repZoneForPhase`: threshold in base and specific, interval in peak only. Long reps are threshold work
+  — running 2km at interval pace is a different and much more damaging session than the name implies.
+- **Session copy is asserted against the prescription, not the source.** Every quality session names its
+  easy legs in *distance* because it is budgeted in distance. A test parses the numbers back out. A
+  third copy of the old "10 min warm-up" string sat in `generate.dart` for a whole round because nobody
+  checked the output.
 - **Riegel is optimistic at long distances.** `riiegel.conservativeMargin` is a deliberate, exposed
   heuristic. Do not remove it without replacing it.
 - **Beginner path contains zero quality sessions.** That is a safety property, asserted in

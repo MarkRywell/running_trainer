@@ -8,10 +8,14 @@
 library;
 
 import 'package:ai_running_trainer/domain/engine/fitness.dart';
+import 'package:ai_running_trainer/domain/engine/validation.dart';
+import 'package:ai_running_trainer/domain/engine/vdot.dart';
 import 'package:ai_running_trainer/domain/engine/volume.dart';
 import 'package:ai_running_trainer/domain/models/plan.dart';
+import 'package:ai_running_trainer/domain/models/plan_directive.dart';
 import 'package:ai_running_trainer/domain/models/profile.dart';
 import 'package:ai_running_trainer/domain/models/race.dart';
+import 'package:ai_running_trainer/domain/plan/beginner_plan.dart';
 import 'package:ai_running_trainer/domain/plan/generate.dart';
 import 'package:ai_running_trainer/domain/plan/race_plan.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -276,13 +280,21 @@ void main() {
     // A base block is one quality session a week at any day count, which is a
     // design choice rather than an accident: there is no peak to prepare for, so
     // a second hard day would be hard work with nothing behind it.
+    // A cutback does not empty specific or peak. `allocatePhases` splits by
+    // percentage and `isCutbackWeek` then lands wherever it lands, so a 2-week
+    // specific phase could hand its only rep week to a cutback and leave the
+    // phase meant to prepare an athlete for their race containing nothing but
+    // tempos. Base is deliberately exempt — dropping a deload's tempo is the
+    // point of a deload.
     int expected(PlanWeek w, {required bool goalBlock}) {
-      if (w.isCutback) return 0;
       if (w.phase == PlanPhase.baseBlock) return 0;
       // The race is flagged as quality: it is the hardest thing in that week by
       // a wide margin, and a session log that treated it as an easy day would
       // misreport the week entirely.
       if (w.phase == PlanPhase.raceWeek) return 1;
+      // A cutback is a deload in every phase — 100% easy, to absorb the weeks
+      // before it.
+      if (w.isCutback) return 0;
       if (!goalBlock) return 1;
       return qualitySessionsFor(w.phase, w.runCount);
     }
@@ -301,9 +313,10 @@ void main() {
         };
         plans.forEach((plan, isGoalBlock) {
           for (final w in plan.weeks) {
-            // The final taper week carries one goal-pace session by design.
+            // The taper keeps one hard session in its final week, and one in
+            // each earlier week of a long race's taper.
             if (w.phase == PlanPhase.taper) {
-              expect(w.qualityCount, lessThanOrEqualTo(1),
+              expect(w.qualityCount, inInclusiveRange(1, 2),
                   reason: 'week ${w.weekNumber}');
               continue;
             }
@@ -330,6 +343,603 @@ void main() {
               reason: 'week ${w.weekNumber} has $sets sets');
         }
       }
+    });
+  });
+
+  group('a rep count is a training decision, not a budget fill', () {
+    // It used to be "the largest set that fits 22% of the week's volume", so a
+    // 54.7 km week produced nine 800m reps because 22% of it happened to be
+    // 12 km. Nothing in that arithmetic represented a decision about how many
+    // reps to run. A runner read 9 x 800 and reasonably felt it was too much.
+    test('no format exceeds its ceiling, however big the week', () {
+      for (final weeklyKm in [45.0, 60.0, 90.0, 120.0]) {
+        final plan = _withGoal(weeklyKm: weeklyKm);
+        for (final w in plan.weeks) {
+          for (final s in w.workouts) {
+            if (s.type != WorkoutType.intervals) continue;
+            expect(s.reps, lessThanOrEqualTo(maxRepsFor(s.repDistanceM!)),
+                reason: 'week total ${w.targetVolumeKm.toStringAsFixed(1)}km: '
+                    '${s.reps} x ${s.repDistanceM}m');
+          }
+        }
+      }
+    });
+
+    test('a small week cannot buy more reps than a large one', () {
+      int countFor(double km) {
+        final set = _withGoal(weeklyKm: km)
+            .weeks
+            .expand((w) => w.workouts)
+            .firstWhere((w) => w.type == WorkoutType.intervals);
+        return set.reps!;
+      }
+
+      // Volume may only ever *shorten* a set, never extend one.
+      expect(countFor(120), greaterThanOrEqualTo(countFor(45)));
+    });
+
+    test('the ceilings are the ones a coach would recognise', () {
+      expect(maxRepsFor(400), 12);
+      expect(maxRepsFor(800), 6);
+      expect(maxRepsFor(1000), 5);
+      expect(maxRepsFor(2000), 3);
+    });
+  });
+
+  group('race-specific work is threshold work', () {
+    // The zone was baked into the rep format, so a 10K athlete's race-specific
+    // phase prescribed 800m at interval pace — faster than both their threshold
+    // and their goal pace. That is 5K-effort work in the phase meant to prepare
+    // them for a 10K, and it left peak as the only place with anything sharper.
+    test('a specific-phase set runs at threshold', () {
+      final plan = _withGoal();
+      final sets = plan.weeks
+          .where((w) => w.phase == PlanPhase.specific)
+          .expand((w) => w.workouts)
+          .where((w) => w.type == WorkoutType.intervals);
+      expect(sets, isNotEmpty);
+      for (final s in sets) {
+        expect(s.repZone, IntensityZone.threshold,
+            reason: '${s.title} in the race-specific phase');
+      }
+      final paces = plan.paces;
+      final first = sets.first;
+      final actual = _secondsPerKmIn(first.description);
+      expect(actual, isNotNull, reason: first.description);
+      expect(actual, closeTo(paces.threshold.secPerKm.toDouble(), 1),
+          reason: first.description);
+    });
+
+    test('a peak set is allowed to be fast', () {
+      final paces = _withGoal().paces;
+      expect(
+        paces.interval.secPerKm,
+        lessThan(paces.threshold.secPerKm),
+        reason: 'if interval is not faster than threshold, "peak is sharper" '
+            'is a claim with nothing behind it',
+      );
+      expect(repZoneForPhase(PlanPhase.peak), IntensityZone.interval);
+      expect(repZoneForPhase(PlanPhase.specific), IntensityZone.threshold);
+      expect(repZoneForPhase(PlanPhase.base), IntensityZone.threshold);
+    });
+
+    test('a stretch goal cannot buy faster *training* paces', () {
+      // Every zone is anchored on fitness rather than the goal, so a stretch
+      // goal must not raise the intensity of a Tuesday session above what the
+      // athlete has demonstrated — the `zone_anchor_regression_test` rule. The
+      // set ladder must not be a way around it.
+      //
+      // The taper's race-pace session is the one documented exception and is
+      // excluded: rehearsing the race pace is that session's whole purpose.
+      // (Whether it is faster than threshold is not asserted here — a 1:35 half
+      // is *slower* than this athlete's threshold pace, and a 10K goal is not.
+      // `taper_methodology_test` owns the taper pace.)
+      final athlete = _withGoal(
+          goalTime: const Duration(hours: 1, minutes: 35, seconds: 0));
+      final paces = athlete.paces;
+
+      final training = athlete.weeks
+          .where((w) => w.phase != PlanPhase.taper)
+          .expand((w) => w.workouts)
+          .where((w) => w.type == WorkoutType.intervals);
+      expect(training, isNotEmpty);
+      for (final w in training) {
+        expect(_secondsPerKmIn(w.description),
+            greaterThanOrEqualTo(paces.interval.secPerKm - 1.0),
+            reason: '${w.title} (${w.repZone?.name}, '
+                '${w.reps}x${w.repDistanceM}m): ${w.description}');
+      }
+    });
+  });
+
+  group('the goal-pace block in a long run is hard running', () {
+    // It reported `hardFractionOfDistance: 0`, so `hardVolumeKm` — and therefore
+    // the 80/20 invariant the whole plan is built to satisfy — was computed on a
+    // plan that hid its own race-specific work.
+    test('a specific-phase long run counts its goal-pace block', () {
+      final longs = _withGoal()
+          .weeks
+          .where((w) => w.phase == PlanPhase.specific)
+          .map((w) => w.longRun)
+          .whereType<Workout>();
+      expect(longs, isNotEmpty);
+      for (final l in longs) {
+        expect(l.hardFractionOfDistance, closeTo(0.33, 0.01),
+            reason: 'a third of a specific long run is at marathon pace');
+        expect(l.hardFractionOfDistance * l.distanceKm, greaterThan(3.0));
+      }
+    });
+
+    test('a base long run is genuinely all easy', () {
+      for (final l in _withGoal()
+          .weeks
+          .where((w) => w.phase == PlanPhase.base)
+          .map((w) => w.longRun)
+          .whereType<Workout>()) {
+        expect(l.hardFractionOfDistance, 0);
+      }
+    });
+
+    test('and it is re-derived when the long run is trimmed', () {
+      // The block is a share of the run, so a capped run has a smaller block.
+      // Carrying the old fraction would overstate hard distance on exactly the
+      // weeks that were trimmed.
+      expect(longRunHardFraction(PlanPhase.specific, 20), closeTo(0.33, 0.01));
+      expect(longRunHardFraction(PlanPhase.peak, 20), closeTo(0.25, 0.01));
+      // A peak long run too short for 5 km of MP + goal pace cannot claim it all.
+      expect(longRunHardFraction(PlanPhase.peak, 3), 1.0);
+      expect(longRunHardFraction(PlanPhase.specific, 0), 0);
+    });
+  });
+
+  group('the frequency hint, and what it deliberately does not say', () {
+    // A runner on three days gets one hard session. For a VDOT 38 that is a
+    // complete and sustainable arrangement — and the runner it came from said so.
+    // Above roughly VDOT 45 it starts leaving something on the table, and the app
+    // knows both numbers and was saying nothing.
+    PlanFlag? hintOf(TrainingPlan plan) {
+      for (final f in plan.flags) {
+        if (f.title.contains('hard session a week is what')) return f;
+      }
+      return null;
+    }
+
+    TrainingPlan atVdot(double vdot, int days) => generate(
+          profile: _noGoalRunner(days: days),
+          races: [
+            RaceResult(
+              distance: RaceDistance.k10,
+              time: equivalentTime(vdot, RaceDistance.k10),
+              date: testToday,
+            ),
+          ],
+          goal: null,
+          startDate: testToday,
+        );
+
+    test('it fires for a fast runner on three days', () {
+      final plan = atVdot(50, 3);
+      final hint = hintOf(plan);
+      expect(hint, isNotNull, reason: 'no hint for a VDOT 50 runner on 3 days');
+      expect(hint!.severity, FlagSeverity.info,
+          reason: 'this is a trade-off to be aware of, not an error');
+      expect(hint.detail, contains('coherent way to train'),
+          reason: 'it must not tell a sound arrangement it is wrong');
+      expect(hint.detail, contains('fourth day'));
+    });
+
+    test('it does not fire for a moderate runner on three days', () {
+      // The case that produced the rule. VDOT 38, three days, one speed session
+      // a week — flagged, this would be nagging about a legitimate setup.
+      expect(hintOf(atVdot(38, 3)), isNull);
+    });
+
+    test('it fires exactly when fitness and frequency disagree', () {
+      // The rule itself, asserted over a range rather than at three points, so a
+      // change to either side of it has to be deliberate.
+      for (final vdot in [30.0, 38.0, 42.0, 45.0, 48.0, 52.0]) {
+        for (final days in [3, 4, 5, 6]) {
+          final shouldFire =
+              days <= 3 && vdot >= minimumVdotsForTwoSessions;
+          expect(hintOf(atVdot(vdot, days)) != null, shouldFire,
+              reason: 'VDOT $vdot on $days days');
+        }
+      }
+    });
+
+    test('it does not fire at four days, whatever the fitness', () {
+      expect(hintOf(atVdot(52, 4)), isNull);
+    });
+
+    test('it does not fire for a fast runner on five days', () {
+      expect(hintOf(atVdot(52, 5)), isNull);
+    });
+
+    test('and it never changes the plan', () {
+      // A flag must not be able to make a week harder or softer. The two athletes
+      // differ in fitness so their *distances* legitimately differ; what must not
+      // differ is the shape of the week.
+      final fast = atVdot(50, 3);
+      final moderate = atVdot(38, 3);
+      expect(fast.weeks.map((w) => w.qualityCount).toList(),
+          moderate.weeks.map((w) => w.qualityCount).toList());
+      expect(fast.weeks.map((w) => w.runCount).toList(),
+          moderate.weeks.map((w) => w.runCount).toList());
+      expect(fast.weeks.map((w) => w.phase).toList(),
+          moderate.weeks.map((w) => w.phase).toList());
+    });
+
+    test('a runner with no race data gets no hint, because there is no VDOT', () {
+      final plan = generate(
+        profile: _noGoalRunner(days: 3),
+        races: const [],
+        goal: null,
+        startDate: testToday,
+      );
+      expect(hintOf(plan), isNull);
+    });
+  });
+
+  group('drop-quality has two shapes, and the right one is structural', () {
+    // With two quality sessions, removing them is proportionate: the runner
+    // still has a week of running, it is simply an easy one. With one — which is
+    // every week at three and four days, and every base week at any day count —
+    // removal is all-or-nothing on a single session and the proposal offers no
+    // middle option at all.
+    test('a one-session week is shortened, not deleted', () {
+      final with_ = _withGoal();
+      final without = generate(
+        profile: _noGoalRunner(),
+        races: _races(),
+        goal: goal(RaceDistance.half,
+            finishTime: const Duration(hours: 1, minutes: 50),
+            inWeeks: 16,
+            daysPerWeek: 4),
+        directive: const PlanDirective(suppressQuality: true),
+        startDate: testToday,
+      );
+      for (var i = 0; i < with_.weeks.length; i++) {
+        final before = with_.weeks[i];
+        if (before.isCutback ||
+            before.phase == PlanPhase.taper ||
+            before.phase == PlanPhase.raceWeek) {
+          continue;
+        }
+        final after = without.weeks[i];
+        expect(after.qualityCount, greaterThan(0),
+            reason: 'week ${before.weekNumber} lost its session entirely');
+        expect(after.hardVolumeKm, lessThan(before.hardVolumeKm),
+            reason: 'week ${before.weekNumber} did not get easier');
+        // Not a token: cutting to 60% must leave real work behind.
+        expect(after.hardVolumeKm, greaterThan(before.hardVolumeKm * 0.4),
+            reason: 'week ${before.weekNumber} was cut to a stub');
+      }
+    });
+
+    test('a two-session week is cleared out', () {
+      final with_ = generate(
+        profile: _noGoalRunner(days: 5),
+        races: _races(),
+        goal: goal(RaceDistance.half,
+            finishTime: const Duration(hours: 1, minutes: 50),
+            inWeeks: 16,
+            daysPerWeek: 5),
+        startDate: testToday,
+      );
+      final without = generate(
+        profile: _noGoalRunner(days: 5),
+        races: _races(),
+        goal: goal(RaceDistance.half,
+            finishTime: const Duration(hours: 1, minutes: 50),
+            inWeeks: 16,
+            daysPerWeek: 5),
+        directive: const PlanDirective(suppressQuality: true),
+        startDate: testToday,
+      );
+      final two = with_.weeks.where((w) => w.qualityCount == 2).toList();
+      expect(two, isNotEmpty);
+      for (final before in two) {
+        if (before.phase == PlanPhase.taper) continue;
+        expect(without.weeks[before.weekNumber - 1].hardVolumeKm, 0,
+            reason: 'week ${before.weekNumber} kept hard running');
+      }
+    });
+
+    test('the taper is exempt either way', () {
+      final without = generate(
+        profile: _noGoalRunner(days: 4),
+        races: _races(),
+        goal: goal(RaceDistance.marathon,
+            finishTime: const Duration(hours: 3, minutes: 20),
+            inWeeks: 16,
+            daysPerWeek: 4),
+        directive: const PlanDirective(suppressQuality: true),
+        startDate: testToday,
+      );
+      expect(
+        without.weeks
+            .where((w) => w.phase == PlanPhase.taper)
+            .any((w) => w.hardVolumeKm > 0),
+        isTrue,
+        reason: 'the taper keeps its hard work by design',
+      );
+    });
+
+    test('a cutback is 100% easy even with the directive on', () {
+      final without = generate(
+        profile: _noGoalRunner(days: 4),
+        races: _races(),
+        goal: goal(RaceDistance.half,
+            finishTime: const Duration(hours: 1, minutes: 50),
+            inWeeks: 16,
+            daysPerWeek: 4),
+        directive: const PlanDirective(suppressQuality: true),
+        startDate: testToday,
+      );
+      for (final w in without.weeks.where((w) => w.isCutback)) {
+        expect(w.hardVolumeKm, 0, reason: 'week ${w.weekNumber}');
+      }
+    });
+  });
+
+  group('a three-day plan reaches a set without being told to', () {
+    // The premise for *not* changing the prescription at three days: the ladder
+    // already gives a set in peak and alternates in specific, so a three-day
+    // runner is not doing twelve tempos. A VDOT 38 runner managing one speed
+    // session a week is the design working, not a gap in it.
+    test('by the peak phase a three-day week contains a rep set', () {
+      // Only the goal block has a peak — a base block has base and specific, and
+      // inventing a peak for a runner with no race would imply a taper that never
+      // comes. The base block still reaches a set, in its specific phase.
+      final peakSets = generate(
+        profile: _noGoalRunner(days: 3),
+        races: _races(),
+        goal: goal(RaceDistance.k10,
+            finishTime: const Duration(minutes: 45),
+            inWeeks: 16,
+            daysPerWeek: 3),
+        startDate: testToday,
+      ).weeks
+          .where((w) => w.phase == PlanPhase.peak)
+          .expand((w) => w.workouts)
+          .where((w) => w.type == WorkoutType.intervals);
+      expect(peakSets, isNotEmpty, reason: 'a three-day peak has no set');
+      expect(peakSets.first.repDistanceM, isNotNull);
+
+      expect(_noGoalPlan(days: 3).weeks.expand((w) => w.workouts)
+          .where((w) => w.type == WorkoutType.intervals), isNotEmpty,
+          reason: 'a three-day base block never reaches a set');
+    });
+  });
+
+  group('a cutback is a deload in every phase', () {
+    // There was a period where specific and peak were exempted, so that a short
+    // phase could not lose its only rep week to a cutback. That made cutbacks do
+    // two contradictory things at once, and "keep the hard work" is not a
+    // deload under any reading of the word.
+    //
+    // The risk it papered over is real — `allocatePhases` splits by percentage
+    // and `isCutbackWeek` then lands wherever it lands, so a two-week specific
+    // phase can hand its only rep week to a cutback. That is now visible rather
+    // than hidden. The fix for it is to place the cutback, not to exempt a phase
+    // from deloading.
+    test('no cutback carries hard work', () {
+      for (final plan in [
+        _withGoal(),
+        _noGoalPlan(),
+        _noGoalPlan(days: 5),
+        _noGoalPlan(days: 6),
+      ]) {
+        for (final w in plan.weeks.where((w) => w.isCutback)) {
+          expect(w.qualityCount, 0,
+              reason: 'cutback week ${w.weekNumber} (${w.phase.name}) kept '
+                  'hard work');
+          expect(w.hardVolumeKm, 0,
+              reason: 'cutback week ${w.weekNumber} (${w.phase.name}) is not '
+                  '100% easy');
+        }
+      }
+    });
+
+    test('every other build week still carries one', () {
+      // The complement of the deload rule, and the property that was actually
+      // wanted: the >=1 guarantee covers *common* weeks, and a cutback is not
+      // one.
+      for (final plan in [
+        _withGoal(),
+        _noGoalPlan(days: 5),
+        _noGoalPlan(days: 6),
+      ]) {
+        for (final w in plan.weeks) {
+          if (w.isCutback) continue;
+          if (w.phase == PlanPhase.taper || w.phase == PlanPhase.raceWeek) {
+            continue;
+          }
+          expect(w.qualityCount, greaterThan(0),
+              reason: 'week ${w.weekNumber} (${w.phase.name}) has no hard work');
+        }
+      }
+    });
+  });
+
+  group('the session card says what the session actually is', () {
+    // Every quality session was described in minutes while being budgeted in
+    // distance, so the easy legs inflated to fill and every card understated the
+    // session by about twelve minutes. A runner told "10 min warm-up, 5 min cool
+    // down" and then handed 27 minutes of easy has no way to know they are being
+    // asked for more than the card says — and "it feels like too much" is not a
+    // report anyone files. It just becomes a reason to stop running the session.
+    test('no quality session describes its warm-up in minutes', () {
+      for (final plan in [
+        _withGoal(),
+        _noGoalPlan(),
+        _noGoalPlan(days: 5),
+      ]) {
+        for (final w in plan.weeks) {
+          for (final s in w.workouts) {
+            if (!s.isQuality || s.type == WorkoutType.race) continue;
+            expect(s.description, isNot(contains('min warm-up')),
+                reason: 'week ${w.weekNumber}: ${s.title}');
+            expect(s.description, contains('Easy for'),
+                reason: 'week ${w.weekNumber}: ${s.title}');
+          }
+        }
+      }
+    });
+
+    test('the distances it names add up to the session', () {
+      for (final plan in [_withGoal(), _noGoalPlan()]) {
+        for (final w in plan.weeks) {
+          for (final s in w.workouts) {
+            if (!s.isQuality || s.type == WorkoutType.race) continue;
+            final easyKm = s.distanceKm * (1 - s.hardFractionOfDistance);
+            expect(
+              s.description,
+              contains(_formatDistance(easyKm / 2)),
+              reason: 'week ${w.weekNumber}: ${s.title} prescribes '
+                  '${easyKm.toStringAsFixed(2)} km of easy but its card does '
+                  'not name half of it',
+            );
+          }
+        }
+      }
+    });
+  });
+
+  group('every build week keeps its speed session', () {
+    // The runner's own requirement, and the thing this round's changes could
+    // most easily have cost: a three-day week is easy / speed / long, and the
+    // speed session has to actually be there.
+    test('no build week is left without one, at any day count', () {
+      for (final days in [3, 4, 5, 6]) {
+        for (final plan in [
+          _noGoalPlan(days: days),
+          // `daysPerWeek` on the *goal* is what sizes a race block; the profile
+          // only sizes a base block. Passing the profile alone left this testing
+          // four days in both arms.
+          generate(
+            profile: _noGoalRunner(days: days),
+            races: _races(),
+            goal: goal(RaceDistance.k10,
+                finishTime: const Duration(minutes: 45),
+                inWeeks: 16,
+                daysPerWeek: days),
+            startDate: testToday,
+          ),
+        ]) {
+          for (final w in plan.weeks) {
+            if (w.phase == PlanPhase.taper || w.phase == PlanPhase.raceWeek) {
+              continue;
+            }
+            // A cutback is a deload, in every phase: 100% easy, to absorb the
+            // weeks before it. "Keep the hard work" is not a deload. The
+            // consequence is visible rather than papered over — on a short
+            // block a cutback can land in the race-specific phase and leave it
+            // without a rep week. The fix for that is to place the cutback, not
+            // to exempt a phase from deloading.
+            if (w.isCutback) continue;
+            expect(w.qualityCount, greaterThan(0),
+                reason: 'week ${w.weekNumber} (${w.phase.name}, '
+                    'cutback=${w.isCutback}, $days days) has no speed work');
+          }
+        }
+      }
+    });
+
+    test('and no session is budgeted without a day to place it', () {
+      // `qualitySlots(2, 1)` used to return `[3]` for a week whose only
+      // positions are 0 and 1: the session was built, subtracted from the easy
+      // budget, and never written down. The slot list is now authoritative, so a
+      // week cannot budget a session it has no day for.
+      expect(qualitySlots(2, 1), isEmpty);
+      for (final days in [3, 4, 5, 6]) {
+        for (final count in [0, 1, 2]) {
+          final slots = qualitySlots(days, count);
+          for (final s in slots) {
+            expect(s, lessThan(days), reason: '$days days');
+          }
+          expect(slots.toSet().length, slots.length, reason: '$days days');
+          expect(slots, isNot(contains(0)), reason: '$days days');
+          expect(slots, isNot(contains(days - 1)), reason: '$days days');
+          expect(slots.length, lessThanOrEqualTo(count), reason: '$days days');
+        }
+      }
+    });
+  });
+
+  group('a three-day week is easy, speed, long', () {
+    // At three days the long run is Saturday and Sunday is already free, so a
+    // Monday recovery day is absorbing nothing — and the card said exactly that,
+    // on the wrong side of the long run. It also cost a third of the week's
+    // runnable days spent *below* easy, the one pace that builds nothing.
+    test('the pattern leaves a free day between the long run and the week', () {
+      expect(longRunFollowsImmediately(weeklyDayPattern(3)), isFalse);
+      for (final days in [4, 5, 6]) {
+        expect(longRunFollowsImmediately(weeklyDayPattern(days)), isTrue,
+            reason: '$days days');
+      }
+    });
+
+    test('three days gives no recovery run', () {
+      for (final plan in [
+        _noGoalPlan(days: 3),
+        generate(
+          profile: _noGoalRunner(days: 3),
+          races: _races(),
+          goal: goal(RaceDistance.k10,
+              finishTime: const Duration(minutes: 45),
+              inWeeks: 16,
+              daysPerWeek: 3),
+          startDate: testToday,
+        ),
+      ]) {
+        for (final w in plan.weeks) {
+          for (final s in w.workouts) {
+            expect(s.type, isNot(WorkoutType.recovery),
+                reason: 'week ${w.weekNumber}: ${s.title}');
+          }
+        }
+      }
+    });
+
+    test('four or more days still gets one, because there the long run is Sunday',
+        () {
+      for (final days in [4, 5, 6]) {
+        final plan = _noGoalPlan(days: days);
+        final recovery = plan.weeks
+            .expand((w) => w.workouts)
+            .where((w) => w.type == WorkoutType.recovery);
+        expect(recovery, isNotEmpty, reason: '$days days lost its recovery day');
+        // And the copy is true there: it really does follow the long run.
+        expect(recovery.first.description, contains('Absorb the long run'));
+      }
+    });
+
+    test('the swap is zone-only — no volume or 80/20 movement', () {
+      for (final days in [3, 4, 5, 6]) {
+        final plan = _noGoalPlan(days: days);
+        for (final w in plan.weeks) {
+          if (w.phase == PlanPhase.raceWeek) continue;
+          // The week still adds up.
+          expect(w.targetVolumeKm, closeTo(w.runVolumeKm, 0.01),
+              reason: 'week ${w.weekNumber} at $days days');
+          // And both zones count as easy, so the 80/20 split cannot have moved.
+          for (final s in w.runs) {
+            if (s.type == WorkoutType.easy || s.type == WorkoutType.recovery) {
+              expect(s.zone.isEasy, isTrue, reason: '${s.title} at $days days');
+            }
+          }
+        }
+      }
+    });
+
+    test('the first day of a three-day week says why it is easy', () {
+      final week = _noGoalPlan(days: 3).weeks.first;
+      final first = week.workouts.firstWhere((w) => w.weekday == 1);
+      expect(first.type, WorkoutType.easy);
+      expect(first.description, contains('go slower'),
+          reason: 'the safety valve has to be on the card, not just intended');
+      expect(first.description, isNot(contains('Absorb the long run')));
     });
   });
 
@@ -364,10 +974,37 @@ void main() {
   });
 }
 
-TrainingPlan _withGoal() => generate(
-      profile: _noGoalRunner(),
+TrainingPlan _withGoal({
+  double weeklyKm = 45,
+  Duration goalTime = const Duration(hours: 1, minutes: 50),
+}) =>
+    generate(
+      profile: _noGoalRunner(km: weeklyKm),
       races: _races(),
-      goal: goal(RaceDistance.half,
-          finishTime: const Duration(hours: 1, minutes: 50), inWeeks: 16),
+      goal: goal(RaceDistance.half, finishTime: goalTime, inWeeks: 16),
       startDate: testToday,
     );
+
+/// The largest rep count this app will prescribe for a given rep distance.
+///
+/// Read out of the ladder rather than hardcoded in the test, so a change to the
+/// ladder shows up here as a failure rather than as a silent drift.
+int maxRepsFor(int distanceM) {
+  final format = repFormatFor(distanceM);
+  if (format == null) return fail('no $distanceM m rep format exists');
+  return format.maxReps;
+}
+
+/// Seconds per km named in a session's description, or null if it names none.
+int? _secondsPerKmIn(String description) {
+  final match = RegExp(r'(\d+):(\d\d)/km').firstMatch(description);
+  if (match == null) return null;
+  return int.parse(match.group(1)!) * 60 + int.parse(match.group(2)!);
+}
+
+/// A running distance as the session cards render it.
+String _formatDistance(double km) {
+  if (km < 1) return '${(km * 1000).round()} m';
+  if (km < 10) return '${km.toStringAsFixed(1)} km';
+  return '${km.round()} km';
+}

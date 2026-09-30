@@ -12,6 +12,16 @@ enum RaceDistance {
   final double metres;
   final String label;
 
+  /// 5K and 10K — a distance that is finished on current fitness.
+  ///
+  /// This is the line the taper is drawn on, and it is a real physiological
+  /// distinction rather than a matter of taste. There is no glycogen debt to clear
+  /// at these distances and no race-specific durability to build, so the tools
+  /// that a marathon taper needs — a second week, a shortened long run — buy
+  /// nothing here. A 10K athlete is racing on speed and freshness; a marathon
+  /// athlete is racing on fuelling and fatigue management.
+  bool get isShort => this == k5 || this == k10;
+
   static RaceDistance fromName(String name) =>
       RaceDistance.values.firstWhere((d) => d.name == name);
 }

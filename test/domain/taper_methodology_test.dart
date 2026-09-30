@@ -16,7 +16,9 @@
 ///   that ships because the words are right and the code is not.
 library;
 
+import 'package:ai_running_trainer/domain/engine/fitness.dart';
 import 'package:ai_running_trainer/domain/engine/volume.dart';
+import 'package:ai_running_trainer/domain/models/goal.dart';
 import 'package:ai_running_trainer/domain/models/plan.dart';
 import 'package:ai_running_trainer/domain/models/plan_directive.dart';
 import 'package:ai_running_trainer/domain/models/profile.dart';
@@ -131,15 +133,23 @@ void main() {
       });
     }
 
-    test('only the final taper week carries hard work', () {
+    test('earlier taper weeks keep hard work, but not at race pace', () {
+      // A multi-week taper is not half its length at zero intensity — that reads
+      // as a deload wearing a taper's name. But the race-pace session belongs to
+      // the final week only: running it twice spends the one session the runner
+      // should be arriving fresh for.
       final taper = _taperWeeks(_plan(RaceDistance.half, 16));
+      expect(taper.length, greaterThan(1));
       for (final w in taper.take(taper.length - 1)) {
-        expect(
-          w.workouts.where((s) => s.isQuality).isEmpty,
-          isTrue,
-          reason: 'week ${w.weekNumber} should be easy — the final session '
-              'belongs 4-5 days out, not three weeks out',
-        );
+        final hard =
+            w.workouts.where((s) => s.isQuality && s.type != WorkoutType.race);
+        expect(hard, isNotEmpty,
+            reason: 'week ${w.weekNumber} lost all its hard work');
+        for (final s in hard) {
+          expect(s.zone, isNot(IntensityZone.marathon),
+              reason: 'week ${w.weekNumber} is not the final taper week and '
+                  'should not be running race pace yet');
+        }
       }
     });
 
@@ -196,6 +206,126 @@ void main() {
         1,
         reason: 'the taper is exempt from the directive',
       );
+    });
+  });
+
+  group('the taper length follows the race distance, not the block', () {
+    // A real report: a 10K athlete in a 9-week block got the same 2-week taper a
+    // marathoner would, on a week it could not afford, and asked why there was
+    // nothing to race-specific in it.
+    test('a 10K tapers for one week however long the block', () {
+      for (final short in [RaceDistance.k5, RaceDistance.k10]) {
+        for (final inWeeks in [6, 9, 14, 20]) {
+          final taper =
+              _taperWeeks(_plan(short, inWeeks)).length;
+          expect(taper, 1,
+              reason: '${short.name} over $inWeeks weeks got $taper taper weeks');
+        }
+      }
+    });
+
+    test('a half or marathon gets two, or three on a long block', () {
+      for (final long in [RaceDistance.half, RaceDistance.marathon]) {
+        expect(_taperWeeks(_plan(long, 9)).length, 2, reason: long.name);
+        expect(_taperWeeks(_plan(long, 18)).length, 3, reason: long.name);
+      }
+    });
+
+    test('a short-race taper week has no long run at all', () {
+      // At 5K and 10K there is no race-specific durability to build, so the long
+      // run's only remaining job in the taper week is to be the biggest thing in
+      // it — which is the opposite of the point.
+      for (final short in [RaceDistance.k5, RaceDistance.k10]) {
+        final plan = _plan(short, 12);
+        for (final w in _taperWeeks(plan)) {
+          expect(w.longRun, isNull,
+              reason: '${short.name} taper week ${w.weekNumber} kept a '
+                  '${w.longRun?.distanceKm.toStringAsFixed(1)} km long run');
+        }
+      }
+    });
+
+    test('a long-race taper week keeps its long run', () {
+      for (final w in _taperWeeks(_plan(RaceDistance.marathon, 18))) {
+        expect(w.longRun, isNotNull, reason: 'week ${w.weekNumber}');
+      }
+    });
+
+    test('a short-race taper week is short runs and one sharp session', () {
+      final week = _taperWeeks(_plan(RaceDistance.k10, 12)).single;
+      expect(week.qualityCount, 1);
+      for (final s in week.runs.where((s) => s.type != WorkoutType.race)) {
+        expect(s.distanceKm, lessThanOrEqualTo(8.0),
+            reason: '${s.title} is ${s.distanceKm.toStringAsFixed(1)} km — '
+                'this is a taper, not a peak');
+      }
+    });
+  });
+
+  group('the taper session runs at the goal pace', () {
+    // The description said "your goal pace" while reading `paces.marathon` —
+    // the fitness anchor. For a marathon goal the two nearly coincide, so it was
+    // invisible. For a 10K they were 40 s/km apart, and a runner with a 51:00
+    // goal was told to run their last sharpening reps at 5:46/km.
+    for (final entry in {
+      RaceDistance.k5: const Duration(minutes: 24),
+      RaceDistance.k10: const Duration(minutes: 51),
+      RaceDistance.half: const Duration(hours: 1, minutes: 45),
+      RaceDistance.marathon: const Duration(hours: 3, minutes: 20),
+    }.entries) {
+      test('a ${entry.key.label} goal', () {
+        final plan = generate(
+          profile: _runner(),
+          races: [raceK10(const Duration(minutes: 52, seconds: 13))],
+          goal: GoalRace(
+            distance: entry.key,
+            date: testToday.add(const Duration(days: 18 * 7)),
+            finishTimeGoal: entry.value,
+            daysPerWeek: 4,
+          ),
+          startDate: testToday,
+        );
+        final session = _taperWeeks(plan)
+            .last
+            .workouts
+            .firstWhere((s) => s.isQuality && s.type != WorkoutType.race);
+        final goalPaceSecPerKm =
+            (entry.value.inSeconds / (entry.key.metres / 1000)).round();
+        final ladder = derivePaces(
+          fitness: assessFitness(
+              [raceK10(const Duration(minutes: 52, seconds: 13))], testToday),
+          goal: null,
+          beginner: false,
+        );
+        final expected =
+            goalPaceSecPerKm < ladder.repetition.secPerKm
+                ? ladder.repetition.secPerKm
+                : goalPaceSecPerKm;
+        expect(session.repZone, isNotNull);
+        expect(expected, closeTo(goalPaceSecPerKm, 2),
+            reason: 'the repetition floor should not bind for this goal');
+      });
+    }
+
+    test('and the copy names the pace it actually prescribes', () {
+      final plan = generate(
+        profile: _runner(),
+        races: [raceK10(const Duration(minutes: 52, seconds: 13))],
+        goal: GoalRace(
+          distance: RaceDistance.k10,
+          date: testToday.add(const Duration(days: 18 * 7)),
+          finishTimeGoal: const Duration(minutes: 51),
+          daysPerWeek: 4,
+        ),
+        startDate: testToday,
+      );
+      final session = _taperWeeks(plan)
+          .last
+          .workouts
+          .firstWhere((s) => s.isQuality && s.type != WorkoutType.race);
+      expect(session.description, contains('your goal pace'));
+      // 51:00 over 10 km is 5:06/km. The plan used to print 5:46 here.
+      expect(session.description, contains('5:06'));
     });
   });
 

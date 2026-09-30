@@ -349,8 +349,11 @@ void main() {
 
   group('phase allocation', () {
     test('produces the requested number of weeks', () {
-      for (var n = minimumWeeksForFullPlan; n <= maxPlanWeeks; n++) {
-        expect(allocatePhases(n).length, n, reason: '$n weeks');
+      for (final goal in RaceDistance.values) {
+        for (var n = minimumWeeksForFullPlan; n <= maxPlanWeeks; n++) {
+          expect(allocatePhases(n, goal: goal).length, n,
+              reason: '${goal.name}, $n weeks');
+        }
       }
     });
 
@@ -358,24 +361,56 @@ void main() {
       // Below the minimum the generator clamps, but the allocator itself must
       // not return more weeks than asked for.
       for (var n = 3; n < minimumWeeksForFullPlan; n++) {
-        expect(allocatePhases(n).length, n, reason: '$n weeks');
+        expect(allocatePhases(n, goal: RaceDistance.marathon).length, n,
+            reason: '$n weeks');
       }
     });
 
     test('always keeps a taper and a race week', () {
-      for (var n = minimumWeeksForFullPlan; n <= maxPlanWeeks; n++) {
-        final p = allocatePhases(n);
-        expect(p.contains(PlanPhase.raceWeek), isTrue, reason: '$n weeks');
-        expect(p.contains(PlanPhase.taper), isTrue, reason: '$n weeks');
-        expect(p.contains(PlanPhase.peak), isTrue, reason: '$n weeks');
+      for (final goal in RaceDistance.values) {
+        for (var n = minimumWeeksForFullPlan; n <= maxPlanWeeks; n++) {
+          final p = allocatePhases(n, goal: goal);
+          expect(p.contains(PlanPhase.raceWeek), isTrue,
+              reason: '${goal.name}, $n weeks');
+          expect(p.contains(PlanPhase.taper), isTrue,
+              reason: '${goal.name}, $n weeks');
+          expect(p.contains(PlanPhase.peak), isTrue,
+              reason: '${goal.name}, $n weeks');
+        }
       }
     });
 
     test('a longer block gets a longer taper', () {
       expect(
-        allocatePhases(20).where((p) => p == PlanPhase.taper).length,
-        greaterThan(allocatePhases(8).where((p) => p == PlanPhase.taper).length),
+        allocatePhases(20, goal: RaceDistance.marathon)
+            .where((p) => p == PlanPhase.taper)
+            .length,
+        greaterThan(allocatePhases(8, goal: RaceDistance.marathon)
+            .where((p) => p == PlanPhase.taper)
+            .length),
       );
+    });
+
+    test('a short race tapers for one week, a long race for two or three', () {
+      // Taper length follows the race distance, not the block length. A 10K has
+      // no glycogen debt to clear, so a second taper week buys nothing; a
+      // marathon is a different sport and gets the time.
+      for (final short in [RaceDistance.k5, RaceDistance.k10]) {
+        expect(taperWeeksFor(totalWeeks: 20, goal: short), 1, reason: short.name);
+      }
+      expect(taperWeeksFor(totalWeeks: 8, goal: RaceDistance.marathon), 2);
+      expect(taperWeeksFor(totalWeeks: 20, goal: RaceDistance.marathon), 3);
+    });
+
+    test('the taper length is independent of the block for a short race', () {
+      // The old rule was `totalWeeks >= 12 ? 3 : 2`, which asked the same
+      // question of a 10K and a marathon and gave them the same answer.
+      for (final short in [RaceDistance.k5, RaceDistance.k10]) {
+        for (final n in [6, 9, 14, 20]) {
+          expect(taperWeeksFor(totalWeeks: n, goal: short), 1,
+              reason: '${short.name}, $n weeks');
+        }
+      }
     });
 
     test('quality sessions are never more than two', () {

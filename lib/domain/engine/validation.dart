@@ -170,8 +170,20 @@ List<PlanFlag> validate({
   Map<String, WeekLog> weekLogs = const {},
   int weekCount = 0,
   DateTime Function(int i)? weekStartFor,
+  int? daysPerWeek,
 }) {
   final flags = <PlanFlag>[];
+
+  // Before the `goal == null` return on purpose. A runner with no race on the
+  // calendar is the one most likely to be under-stimulated and least likely to
+  // be told, because everything else this function says is about a goal.
+  if (daysPerWeek != null) {
+    flags.addAll(_validateFrequencyAgainstFitness(
+      fitness: fitness,
+      daysPerWeek: daysPerWeek,
+    ));
+  }
+
 
   // Every data-quality note goes into **one** flag, not one flag each.
   //
@@ -221,6 +233,53 @@ List<PlanFlag> validate({
 /// the long run the threshold was meant to be gating. That misfiled a real
 /// report — two years' running, a 1:56 half marathon, 15 km a week — onto a
 /// beginner block with a 3 km long run.
+/// VDOT at which one hard session a week stops being enough.
+///
+/// A judgement, not a source, and it lives here as one named constant so it can
+/// be argued with in one place. The reasoning: this codebase already anchors its
+/// beginner/trained boundary around VDOT 35 ([defaultBeginnerMarathonEquivalentSecPerKm]
+/// is a beginner pace), and 45 — roughly a 45-minute 10K — sits clearly above it,
+/// where coaching convention starts expecting a second weekly quality session.
+///
+/// It is deliberately not lower. A VDOT 38 runner on three days a week, with one
+/// threshold session in the week, is a complete and sustainable arrangement and
+/// was described as such by the runner it came from. Flagging that would be
+/// nagging about a legitimate setup, which is the thing this app exists not to be.
+const int minimumVdotsForTwoSessions = 45;
+
+/// Days per week at which a flag is worth raising at all.
+///
+/// Three only. Four days carrying one hard session is a normal arrangement, and
+/// a hint that fires on a sound setup teaches a runner to ignore hints.
+const int _maxDaysToFlagFrequency = 3;
+
+/// Names the runner's current pace, so the hint is concrete rather than abstract.
+List<PlanFlag> _validateFrequencyAgainstFitness({
+  required FitnessAssessment fitness,
+  required int daysPerWeek,
+}) {
+  final vdot = fitness.vdot;
+  if (vdot == null) return const [];
+  if (daysPerWeek > _maxDaysToFlagFrequency) return const [];
+  if (vdot < minimumVdotsForTwoSessions) return const [];
+
+  return [
+    PlanFlag(
+      severity: FlagSeverity.info,
+      title: 'One hard session a week is what $daysPerWeek days allows',
+      detail:
+          'Your race times put you at around VDOT $vdot, which is a level where '
+          'most runners train four or five days and take two hard sessions in a '
+          'week. On $daysPerWeek days this plan gives you one.\n\n'
+          'That is a coherent way to train and nothing here is wrong with it — '
+          'one hard session a week, an easy day and a long run is a real week. '
+          'But it is a ceiling you have chosen rather than one the plan has '
+          'imposed, and a fourth day would let us add intervals without taking '
+          'anything away.',
+    ),
+  ];
+}
+
 bool isBeginnerPath(RunnerProfile profile, FitnessAssessment fitness) {
   if (!fitness.hasData) return true;
   if (profile.monthsRunning < 12) return true;

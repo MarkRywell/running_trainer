@@ -80,14 +80,18 @@ List<CoachProposal> propose(PlanProgress progress) {
   if (hardQuality >= _hardQualitySessionsToSuggest) {
     proposals.add(CoachProposal(
       id: 'drop-quality',
-      title: 'Drop the hard sessions, keep everything else',
+      title: 'Cut the hard running back, keep everything else',
       rationale: 'The tempo and interval sessions in '
           '${_weekList(progress.hardQualityWeeks)} came back harder than you '
           'planned, while the rest of those weeks did not. That points at the '
           'quality work rather than at your volume.\n\n'
-          'This removes the hard sessions and leaves your long run and easy days '
-          'exactly as they are. You keep all the running; you lose the part that '
-          'is not working. Put it back whenever it starts feeling right.',
+          'Where your week has two hard sessions, this removes them and leaves '
+          'your long run and easy days exactly as they are. Where it has only '
+          'one — which is what three or four days a week gives you — removing it '
+          'would leave nothing hard at all, so it shortens that session to about '
+          '60% instead.\n\n'
+          'Either way you keep all the running, and you can put the hard work '
+          'back whenever it starts feeling right.',
       directive: const PlanDirective(suppressQuality: true),
       severity: FlagSeverity.caution,
     ));

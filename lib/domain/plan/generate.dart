@@ -61,6 +61,20 @@ List<double?>? adherenceByWeek({
   });
 }
 
+/// How many days a week the plan will actually prescribe.
+///
+/// Resolved once, in [generate], and handed to both the generators and
+/// [validate]. Three different answers used to live in three different places
+/// and none of them were visible to the checks that needed them.
+int resolveDaysPerWeek({
+  required RunnerProfile profile,
+  required GoalRace? goal,
+  int? override,
+}) {
+  final requested = override ?? goal?.daysPerWeek ?? profile.daysPerWeek;
+  return requested.clampI(beginnerMinimumRuns, 6);
+}
+
 TrainingPlan generate({
   required RunnerProfile profile,
   required List<RaceResult> races,
@@ -71,6 +85,17 @@ TrainingPlan generate({
 }) {
   final fitness = assessFitness(races, startDate);
   final beginner = isBeginnerPath(profile, fitness);
+
+  // The day count is resolved **here** rather than inside each generator, so
+  // `validate` can see it. It used to be resolved twice — once by the race block
+  // and once by the base block, both after validation had already run — which
+  // left the frequency check unable to say anything, because nothing had told it
+  // how many days the plan was going to prescribe.
+  final days = resolveDaysPerWeek(
+    profile: profile,
+    goal: goal,
+    override: directive.targetDaysPerWeek,
+  );
 
   // The week *structure* is known before any week is built: it depends only on
   // the goal and the start date. That is what lets the observed-intensity check
@@ -91,6 +116,7 @@ TrainingPlan generate({
     weekLogs: weekLogs,
     weekCount: totalWeeks,
     weekStartFor: (i) => monday.add(Duration(days: 7 * i)),
+    daysPerWeek: days,
   );
 
   final paces = derivePaces(fitness: fitness, goal: goal, beginner: beginner);
@@ -102,7 +128,6 @@ TrainingPlan generate({
       ? firstIncompleteIndex(weekLogs: weekLogs, startDate: startDate)
       : null;
 
-  final days = directive.targetDaysPerWeek;
 
   if (beginner) {
     return buildBeginnerPlan(
@@ -110,7 +135,7 @@ TrainingPlan generate({
       paces: paces,
       startDate: startDate,
       goal: goal,
-      daysPerWeek: days ?? profile.daysPerWeek,
+      daysPerWeek: days,
       weekLogs: weekLogs,
       holdFromWeekIndex: holdFrom,
       flags: flags,
@@ -137,7 +162,7 @@ TrainingPlan generate({
     profile: profile,
     paces: paces,
     startDate: startDate,
-    daysPerWeek: days ?? profile.daysPerWeek,
+    daysPerWeek: days,
     currentWeeklyKm: profile.estimatedWeeklyKm ?? _impliedVolume(fitness),
     weekLogs: weekLogs,
     holdFromWeekIndex: holdFrom,
@@ -321,6 +346,8 @@ TrainingPlan buildTrainedBasePlan({
         targetVolume: volumes[i],
         paces: paces,
         blockWeek: i,
+        // A cutback is 100% easy in every phase, same as the race block. A
+        // deload that keeps its hard session is not a deload.
         isCutback: isCutback,
         suppressQuality: directive.suppressQuality,
       ),
@@ -373,8 +400,13 @@ Workout _baseQuality(
   int blockWeek,
 ) {
   if (blockWeek < baseBlockFirstSetWeek || blockWeek.isEven) {
-    final hard =
-        paces.threshold.overDistance(km * 1000 * tempoHardFraction).inMinutes;
+    // Named in distance, not minutes, for the same reason the race block's tempo
+    // is: the easy legs are budgeted in kilometres, so describing them in time
+    // overstated every session by about seven minutes. See `_tempo` in
+    // race_plan.dart, which is the canonical version.
+    final hardKm = km * tempoHardFraction;
+    final easyKm = km - hardKm;
+    final hardMin = paces.threshold.overDistance(hardKm * 1000).inMinutes;
     return Workout(
       title: 'Tempo',
       type: WorkoutType.tempo,
@@ -384,12 +416,25 @@ Workout _baseQuality(
       isQuality: true,
       hardFractionOfDistance: tempoHardFraction,
       description:
-          '10 min warm-up, then $hard min at ${paces.threshold.format()}/km — '
-          'comfortably hard. 5 min cool down.',
+          'Easy for ${_formatKm(easyKm / 2)}, then $hardMin min steady at '
+          '${paces.threshold.format()}/km — comfortably hard. Easy for '
+          '${_formatKm(easyKm / 2)} to finish.',
     );
   }
   return repSetSession(phase, paces, km, weeklyKm, blockWeek ~/ 2,
       ladderFrom: (blockWeek ~/ 2 - baseBlockFirstSetWeek ~/ 2).clampI(0, 3));
+}
+
+/// A running distance as the session cards render it.
+///
+/// A copy of the formatter in `race_plan.dart`, which is private to it. The
+/// alternative was a third copy of a description string, and this file already
+/// had one that drifted — the two tempos below and in `race_plan.dart` described
+/// the same session in different units.
+String _formatKm(double km) {
+  if (km < 1) return '${(km * 1000).round()} m';
+  if (km < 10) return '${km.toStringAsFixed(1)} km';
+  return '${km.round()} km';
 }
 
 /// First week of a base block that carries a set rather than a tempo.
@@ -438,11 +483,25 @@ List<Workout> _baseWeek({
   final days = pattern.length;
   final workouts = <Workout>[];
   final longIndex = days - 1;
-  final tempoKm = suppressQuality
+  // A base block has exactly **one** quality session, at every day count, so
+  // `drop-quality` shortens it here rather than removing it — the same two-shape
+  // rule the race block applies where a week has a single session. The proposal's
+  // own words are "you keep all the running, you lose the part that is not
+  // working", and on a base block deleting the tempo would make that the whole of
+  // it.
+  final shortenOnly = suppressQuality && !isCutback;
+  // Placement comes from the same function the race block uses, so a day count
+  // with no room cannot build a quality session it has nowhere to put. This used
+  // to hardcode index 1, which is the long run on a two-day week — the same
+  // budget-then-drop fault, one file over.
+  final slots = qualitySlots(days, isCutback ? 0 : 1);
+  final tempoKm = slots.isEmpty
       ? 0.0
       : capQualityAgainstLong(
-          qualityKmPerSession(targetVolume, 1), longKm);
-  final easyDays = days - 1 - (isCutback || suppressQuality ? 0 : 1);
+          qualityKmPerSession(targetVolume, 1) *
+              (shortenOnly ? suppressedQualityScale : 1.0),
+          longKm);
+  final easyDays = days - 1 - slots.length;
   final easyKm =
       ((targetVolume - tempoKm - longKm) / easyDays.clampI(1, 99))
           .clampD(3.0, easyRunCapKm(longKm));
@@ -459,15 +518,31 @@ List<Workout> _baseWeek({
             'workouts that feel hard.',
       ));
     } else if (i == 0) {
-      workouts.add(Workout(
-        title: 'Recovery run',
-        type: WorkoutType.recovery,
-        zone: IntensityZone.recovery,
-        distanceKm: easyKm,
-        targetDuration: paces.recovery.overDistance(easyKm * 1000),
-        description: 'Deliberately slow.',
-      ));
-    } else if (i == 1 && !isCutback && !suppressQuality) {
+      // Same rule as the race block, and the same reason: at three days the long
+      // run is Saturday, Sunday is already free, and a Monday recovery day is
+      // absorbing nothing while costing a third of the week's runnable days
+      // below easy pace. See `longRunFollowsImmediately`.
+      workouts.add(longRunFollowsImmediately(pattern)
+          ? Workout(
+              title: 'Recovery run',
+              type: WorkoutType.recovery,
+              zone: IntensityZone.recovery,
+              distanceKm: easyKm,
+              targetDuration: paces.recovery.overDistance(easyKm * 1000),
+              description: 'Deliberately slow. Absorb the long run, do not add '
+                  'to it.',
+            )
+          : Workout(
+              title: 'Easy run',
+              type: WorkoutType.easy,
+              zone: IntensityZone.easy,
+              distanceKm: easyKm,
+              targetDuration: paces.easy.overDistance(easyKm * 1000),
+              description: 'Easy, and if the long run wrecked you, go slower — '
+                  'there is nothing to gain from running this hard. The point of '
+                  'this day is the easy aerobic running, not the pace.',
+            ));
+    } else if (slots.contains(i)) {
       workouts.add(_baseQuality(phase, paces, tempoKm, targetVolume, blockWeek));
     } else {
       workouts.add(Workout(
