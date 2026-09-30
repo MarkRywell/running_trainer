@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Background layer for the Android 8.0+ adaptive icon.
+
+  Matches AppColors.base (#0E0D0D) so the icon sits on the same near-black the
+  app itself uses, rather than introducing a second "black" from the source
+  artwork's background.
+
+  If the base colour ever changes in lib/ui/theme.dart, change it here too.
+-->
+<resources>
+    <color name="ic_launcher_background">#0E0D0D</color>
+</resources>

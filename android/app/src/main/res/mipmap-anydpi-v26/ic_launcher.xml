@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Android 8.0+ adaptive icon.
+
+  The launcher crops these layers to a shape chosen by the user's theme (circle,
+  squircle, rounded square), so the artwork must sit inside the central 66.7% of
+  the 108dp canvas. Anything outside that is not guaranteed to be visible - which
+  is why the foreground is generated at 0.667 of the canvas rather than filling
+  it, and why the source artwork could not simply be resized into place.
+
+  The foreground is composited opaque onto #0E0D0D rather than left transparent.
+  The launcher may crop to any shape, and a uniform fill means the crop edge is
+  invisible whichever shape it picks. Regenerate with tool\generate_icons.ps1.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+    <monochrome android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>

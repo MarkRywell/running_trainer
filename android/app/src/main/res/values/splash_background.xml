@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The app's own background, shared by the launch splash and the window that
+  Flutter draws into.
+
+  This is AppColors.base (#0E0D0D) from lib/ui/theme.dart. The app is dark-only
+  by design, so there is no light variant to keep in step. If the base colour
+  ever changes, this and values-night/ic_launcher_background.xml must both
+  change with it.
+
+  It exists as a resource rather than being written inline in each file so the
+  splash background, the normal window background and the adaptive icon
+  background cannot drift apart.
+-->
+<resources>
+    <color name="splash_background">#0E0D0D</color>
+</resources>

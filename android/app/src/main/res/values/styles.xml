@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Launch splash for Android 11 and below. The window background while the
+  process starts; the OS removes it once Flutter draws its first frame.
+
+  Both themes here are Theme.Black even though this file is the LIGHT variant,
+  because the app is dark-only by design. Leaving the Light parent in place
+  meant two visible bugs: a white window between the splash and the first
+  Flutter frame, and a light status bar sitting over a near-black app.
+-->
+<resources>
+    <!-- Theme applied while the process starts, when Dark Mode is off. -->
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
+
+    <!--
+      Applied as soon as the process has started. This is the window background
+      both before the first Flutter frame and behind the running UI, so it must
+      be the app's own base colour - not ?android:colorBackground, which resolves
+      to white under the Light parent this file used to have.
+    -->
+    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@color/splash_background</item>
+    </style>
+</resources>

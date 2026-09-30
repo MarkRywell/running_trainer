@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Dark Mode variant of the launch and normal themes.
+
+  Deliberately identical to values/styles.xml: the app is dark-only, so the
+  system Dark Mode setting must not change what the runner sees before or
+  between Flutter frames. If values/styles.xml is edited, edit this too - two
+  files that must agree is the failure mode this comment exists to prevent.
+-->
+<resources>
+    <!-- Theme applied while the process starts, when Dark Mode is on. -->
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@drawable/launch_background</item>
+    </style>
+
+    <style name="NormalTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowBackground">@color/splash_background</item>
+    </style>
+</resources>

@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Launch splash for Android 12+ (API 31), which replaced the windowBackground
+  drawable with the SplashScreen API.
+
+  The OS draws this itself: it shows windowSplashScreenAnimatedIcon centred on
+  windowSplashScreenBackground, then hands over to the running activity. The
+  animation duration is 0 because the app has nothing to animate in from - the
+  default cross-fade just makes the logo appear to shimmer on launch.
+
+  windowSplashScreenAnimatedIcon points at the adaptive launcher icon, so the OS
+  masks it with the user's icon shape. That is deliberate: the splash and the
+  launcher icon then agree, and the artwork is already inside the safe zone
+  because tool\generate_icons.ps1 places it there.
+
+  There is deliberately NO postSplashScreenTheme here. That attribute belongs to
+  androidx.core.splashscreen, which this project does not depend on - adding it
+  fails the resource link with "attr/postSplashScreenTheme not found". Flutter's
+  embedding already switches to NormalTheme on its own, via the
+  io.flutter.embedding.android.NormalTheme meta-data in AndroidManifest.xml.
+-->
+<resources>
+    <style name="LaunchTheme" parent="@android:style/Theme.Black.NoTitleBar">
+        <item name="android:windowSplashScreenBackground">@color/splash_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:windowSplashScreenAnimationDuration">0</item>
+    </style>
+</resources>
+
