@@ -92,8 +92,19 @@ List<PlanPhase> allocatePhases(int totalWeeks, {required RaceDistance goal}) {
 /// rather than on block length.
 int taperWeeksFor({required int totalWeeks, required RaceDistance goal}) {
   if (goal.isShort) return 1;
-  return totalWeeks >= 14 ? 3 : 2;
+  if (goal == RaceDistance.marathon && totalWeeks >= longBlockWeeks) return 3;
+  return 2;
 }
+
+/// Block length at which a marathon earns a third taper week.
+///
+/// A third taper week only pays for itself if there is enough build to have
+/// accumulated the fatigue it exists to clear. Fourteen weeks is a medium block,
+/// not a long one, and handing it the marathon taper cost two weeks of build: a
+/// 14-week half marathon block came out as base 4 / specific 4 / **peak 2** /
+/// taper 3, and one of those two peak weeks was a deload — so the phase whose
+/// whole job is sharpening had a single quality week in it.
+const int longBlockWeeks = 18;
 
 /// Quality sessions per week, by phase and day count. Never more than two —
 /// more than that is how periodization turns into overtraining.
@@ -172,14 +183,12 @@ RacePlanResult buildRacePlan({
   final weeks = <PlanWeek>[];
   var previousLongKm = 0.0;
 
-  final buildWeeks = buildWeekCount(phases);
-
   for (var i = 0; i < phases.length; i++) {
     final phase = phases[i];
     final weekStart = monday.add(Duration(days: 7 * i));
     final isRaceWeek = phase == PlanPhase.raceWeek;
     final isCutback =
-        !isRaceWeek && isCutbackWeek(i, cutbackEveryTrained, buildWeeks);
+        !isRaceWeek && isCutbackWeek(phases, i, cutbackEveryTrained);
 
     if (isRaceWeek) {
       // Through enforcement like every other week, so the reported volume is

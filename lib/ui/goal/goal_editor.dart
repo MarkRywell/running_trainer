@@ -73,7 +73,20 @@ class _GoalEditorState extends State<GoalEditor> {
         _distance = v.distance;
         _date = v.date;
         _days = v.daysPerWeek;
-        _time.text = formatTimeInput(v.finishTimeGoal);
+        // Do not rewrite the field if it already *means* the same thing.
+        //
+        // `formatTimeInput` normalises — `1:5` comes back as `1:05` — so writing
+        // it back on every resync moves the caret under the runner mid-keystroke
+        // and leaves a trailing digit stranded (`1:59:000`).
+        //
+        // This is **not** what fixed the swallowed second colon; the value
+        // equality on [GoalRace] is, and the test for that is verified to fail
+        // without it. This is the quieter half: a resync that legitimately fires —
+        // the runner tapped a different distance while part-way through typing —
+        // must not reformat what they are holding.
+        if (parseTimeInput(_time.text) != v.finishTimeGoal) {
+          _time.text = formatTimeInput(v.finishTimeGoal);
+        }
       });
     }
   }

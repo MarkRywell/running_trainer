@@ -24,6 +24,7 @@ import 'package:ai_running_trainer/domain/models/plan_directive.dart';
 import 'package:ai_running_trainer/domain/models/profile.dart';
 import 'package:ai_running_trainer/domain/models/race.dart';
 import 'package:ai_running_trainer/domain/plan/generate.dart';
+import 'package:ai_running_trainer/domain/plan/race_plan.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fixtures.dart';
@@ -221,10 +222,106 @@ void main() {
     });
   });
 
-  group('the taper length follows the race distance, not the block', () {
+  group('a cutback never opens a phase', () {
+    // A real report, from the other direction: a 14-week half block came out
+    // base 4 / specific 4 / **peak 2** / taper 3, with deloads on week 5 and
+    // week 9. The runner could see neither — both weeks were simply easy weeks —
+    // and concluded the plan had no cutback at all.
+    //
+    // The sampling was not arbitrary. With `build = 10` the phases come out
+    // 4 / 4 / 2, so the boundaries sit at `i = 0, 4, 8` — exactly the positions
+    // `i % 4 == 0` samples. **In every block of that length, both cutbacks land on
+    // a phase opening.** The peak one cost the most: a two-week peak with a
+    // deload in it has a single quality week, so the phase whose whole job is
+    // sharpening had one hard session in it.
+    List<PlanPhase> phasesFor(RaceDistance goal, int weeks) =>
+        allocatePhases(weeks, goal: goal);
+
+    test('no cutback falls on the first week of a phase', () {
+      for (final goal in RaceDistance.values) {
+        for (final weeks in List.generate(15, (i) => 6 + i)) {
+          final phases = phasesFor(goal, weeks);
+          for (final i in cutbackWeeks(phases, cutbackEveryTrained)) {
+            expect(isPhaseStart(phases, i), isFalse,
+                reason: '${goal.name}, $weeks weeks: cutback on week '
+                    '${i + 1} opens the ${phases[i].name} phase');
+          }
+        }
+      }
+    });
+
+    test('the peak is never entirely deloads', () {
+      for (final goal in RaceDistance.values) {
+        for (final weeks in List.generate(15, (i) => 6 + i)) {
+          final plan = _plan(goal, weeks);
+          final peak = plan.weeks.where((w) => w.phase == PlanPhase.peak);
+          if (peak.isEmpty) continue;
+          expect(peak.any((w) => !w.isCutback && w.qualityCount > 0), isTrue,
+              reason: '${goal.name} over $weeks weeks: every peak week is a '
+                  'deload, so the sharpening phase has no hard work');
+        }
+      }
+    });
+
+    test('a half or marathon peak keeps two quality weeks', () {
+      for (final goal in [RaceDistance.half, RaceDistance.marathon]) {
+        for (final weeks in List.generate(15, (i) => 6 + i)) {
+          final peak =
+              _plan(goal, weeks).weeks.where((w) => w.phase == PlanPhase.peak);
+          // A peak of one week cannot hold two quality weeks, and a six-week
+          // block leaves exactly that. The guarantee is about a peak that has
+          // room to be eaten, not about pretending otherwise.
+          if (peak.length < 2) continue;
+          final hard = peak
+              .where((w) => !w.isCutback && w.qualityCount > 0)
+              .length;
+          expect(hard, greaterThanOrEqualTo(2),
+              reason: '${goal.name} over $weeks weeks: a ${peak.length}-week '
+                  'peak has $hard quality week${hard == 1 ? '' : 's'}');
+        }
+      }
+    });
+
+    test('a race-specific phase is not opened with a deload', () {
+      // The other half of the same problem, and the quieter one. Race-specific
+      // is the phase whose job is goal-pace work, so its opening week being easy
+      // is the one week that most needed doing.
+      for (final goal in RaceDistance.values) {
+        for (final weeks in List.generate(15, (i) => 6 + i)) {
+          final plan = _plan(goal, weeks);
+          final firstSpecific = plan.weeks
+              .where((w) => w.phase == PlanPhase.specific)
+              .firstOrNull;
+          if (firstSpecific == null) continue;
+          expect(firstSpecific.isCutback, isFalse,
+              reason: '${goal.name} over $weeks weeks: race-specific opens with '
+                  'a deload');
+        }
+      }
+    });
+
+    test('the reported case comes out right', () {
+      final plan = _plan(RaceDistance.half, 15);
+      final peak = plan.weeks.where((w) => w.phase == PlanPhase.peak).toList();
+      expect(peak.length, 3,
+          reason: 'a 15-week half block should not lose two weeks of build to a '
+              'marathon taper');
+      expect(peak.where((w) => !w.isCutback && w.qualityCount > 0).length,
+          greaterThanOrEqualTo(2));
+      expect(_taperWeeks(plan).length, 2);
+    });
+  });
+
+  group('the taper length follows the race distance', () {
     // A real report: a 10K athlete in a 9-week block got the same 2-week taper a
     // marathoner would, on a week it could not afford, and asked why there was
     // nothing to race-specific in it.
+    //
+    // Then a second one, from the other direction: a **half** marathon on 14
+    // weeks was handed the three-week *marathon* taper, because the rule keyed
+    // the third week on block length alone (`totalWeeks >= 14`). That stole two
+    // weeks of build and collapsed the peak to two weeks — one of them a
+    // deload, so the sharpening phase had a single quality week in it.
     test('a 10K tapers for one week however long the block', () {
       for (final short in [RaceDistance.k5, RaceDistance.k10]) {
         for (final inWeeks in [6, 9, 14, 20]) {
@@ -236,11 +333,29 @@ void main() {
       }
     });
 
-    test('a half or marathon gets two, or three on a long block', () {
-      for (final long in [RaceDistance.half, RaceDistance.marathon]) {
-        expect(_taperWeeks(_plan(long, 9)).length, 2, reason: long.name);
-        expect(_taperWeeks(_plan(long, 18)).length, 3, reason: long.name);
+    test('a half always tapers for two, at any block length', () {
+      for (final inWeeks in [6, 9, 12, 14, 18, 20]) {
+        expect(_taperWeeks(_plan(RaceDistance.half, inWeeks)).length, 2,
+            reason: 'half over $inWeeks weeks');
       }
+    });
+
+    test('a marathon gets two, or three only on a long block', () {
+      for (final inWeeks in [6, 9, 14, 17]) {
+        expect(_taperWeeks(_plan(RaceDistance.marathon, inWeeks)).length, 2,
+            reason: 'marathon over $inWeeks weeks');
+      }
+      for (final inWeeks in [longBlockWeeks, longBlockWeeks + 2]) {
+        expect(_taperWeeks(_plan(RaceDistance.marathon, inWeeks)).length, 3,
+            reason: 'marathon over $inWeeks weeks');
+      }
+    });
+
+    test('the third week belongs to a marathon, not to a long block', () {
+      expect(taperWeeksFor(totalWeeks: 14, goal: RaceDistance.half), 2);
+      expect(taperWeeksFor(totalWeeks: 20, goal: RaceDistance.half), 2,
+          reason: 'a 20-week half block is not a long marathon block');
+      expect(taperWeeksFor(totalWeeks: 14, goal: RaceDistance.marathon), 2);
     });
 
     test('a short-race taper week has no long run at all', () {

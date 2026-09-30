@@ -109,6 +109,11 @@ Future<TrainerController> openDetails(
   return controller;
 }
 
+/// The goal the form under test is holding, standing in for the onboarding
+/// wizard's `_draftGoal`. It has to be a real variable the host rebuilds from,
+/// because **the whole bug is that a new instance arrives on every keystroke**.
+GoalRace? _draft;
+
 void main() {
   // A phone-sized viewport, deliberately. Everything below asserts on content
   // that has to fit at this width.
@@ -1448,6 +1453,145 @@ void main() {
         findsWidgets,
         reason: 'a goal date should start at today, not six months out',
       );
+    });
+  });
+
+  group('the finish time field survives being typed into', () {
+    // Found on a physical Samsung A35: a three-part time like `1:59:00` could not
+    // be entered, because the second colon was swallowed. The field was being
+    // reseeded on every keystroke, because `GoalEditor.didUpdateWidget` compared
+    // two `GoalRace`s with `!=` and `GoalRace` had no `==` — so the comparison was
+    // identity, the guard the comment describes was not doing what the comment
+    // said, and `formatTimeInput`'s normalisation overwrote the character just
+    // typed.
+    //
+    // The asymmetry is the tell: the first colon survived because at that point
+    // no goal had been saved, so `_emit` returned without emitting. By the second
+    // colon a previous value existed, the unparseable text was emitted as that
+    // previous value, and the reseed erased it.
+    //
+    // **`enterText` cannot see any of this.** It sets the whole string in one go,
+    // so there is one emit and a reseed that writes back an identical string.
+    // This types one character at a time, the way a keyboard does.
+    String fieldText(WidgetTester tester) => tester
+        .widget<TextField>(find.byType(TextField).last)
+        .controller!
+        .text;
+
+    /// Types one character at a time, the way a keyboard does, and rebuilds the
+    /// host between each — which is what a real device does and what `enterText`
+    /// does not.
+    Future<void> typeInto(WidgetTester tester, String text) async {
+      final field = find.byType(TextField).last;
+      await tester.tap(field);
+      await tester.pumpAndSettle();
+      for (final ch in text.split('')) {
+        final sofar = tester.widget<TextField>(field).controller!.text;
+          tester.testTextInput.updateEditingValue(TextEditingValue(
+          text: '$sofar$ch',
+          selection: TextSelection.collapsed(offset: '$sofar$ch'.length),
+        ));
+        await tester.pumpAndSettle();
+        expect(tester.widget<TextField>(field).controller!.text, endsWith(ch),
+            reason: 'the "$ch" was swallowed by a reseed');
+      }
+    }
+
+    Widget host() => MaterialApp(
+          theme: AppTheme.dark(),
+          home: Scaffold(
+            body: StatefulBuilder(
+              builder: (context, setState) => ListView(
+                children: [
+                  GoalEditor(
+                    value: _draft,
+                    onChanged: (v) => setState(() => _draft = v),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+
+    setUp(() => _draft = null);
+
+    testWidgets('a three-part time can be typed character by character',
+        (tester) async {
+      await tester.pumpWidget(host());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('10K'));
+      await tester.pumpAndSettle();
+
+      await typeInto(tester, '1:59:00');
+
+      expect(fieldText(tester), '1:59:00');
+      expect(_draft!.finishTimeGoal, const Duration(hours: 1, minutes: 59));
+    });
+
+    testWidgets('the second colon is not swallowed', (tester) async {
+      await tester.pumpWidget(host());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('10K'));
+      await tester.pumpAndSettle();
+
+      // `typeInto` asserts every character lands, so this is specifically about
+      // the one that was being eaten: the second colon.
+      await typeInto(tester, '1:59:');
+    });
+
+    testWidgets('changing another field does not reformat a partial time',
+        (tester) async {
+      // Not the reported bug — `GoalRace`'s value equality is what fixed that.
+      // This is the second, quieter half: a genuine resync must not move the
+      // caret under the runner mid-keystroke. Typing `1:5` and then tapping a
+      // different distance *does* change the value, so the resync legitimately
+      // fires — and without the guard `formatTimeInput` rewrites `1:5` to `1:05`
+      // while they are still holding the field.
+      await tester.pumpWidget(host());
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('10K'));
+      await tester.pumpAndSettle();
+
+      await typeInto(tester, '1:5');
+      expect(fieldText(tester), '1:5');
+
+      await tester.tap(find.text('5K'));
+      await tester.pumpAndSettle();
+
+      expect(fieldText(tester), '1:5',
+          reason: 'the time they are part-way through typing was reformatted '
+              'because they changed distance');
+      expect(_draft!.finishTimeGoal, const Duration(minutes: 1, seconds: 5));
+    });
+
+    testWidgets('two goals with the same fields are equal', (tester) async {
+      // The model-level cause. Without this, every emit looks like a change.
+      final a = GoalRace(
+        distance: RaceDistance.k10,
+        date: DateTime(2027, 1, 24),
+        finishTimeGoal: const Duration(minutes: 51),
+        daysPerWeek: 4,
+      );
+      final b = a.copyWith();
+      expect(b, a, reason: 'a copyWith with no changes is the same goal');
+      expect(b.hashCode, a.hashCode);
+      expect(a.copyWith(daysPerWeek: 5), isNot(a));
+    });
+
+    testWidgets('the profile resync guard compares by value too',
+        (tester) async {
+      // The identical fault one file over, with five text fields instead of one.
+      const a = RunnerProfile(
+        name: 'Sam',
+        age: 30,
+        gender: Gender.preferNotToSay,
+        monthsRunning: 24,
+        daysPerWeek: 4,
+      );
+      expect(a.copyWith(), a);
+      expect(a.copyWith(daysPerWeek: 5), isNot(a));
+      expect(a.copyWith(estimatedWeeklyKm: const Optional(null)), a,
+          reason: 'an omitted wrapper means "leave alone"');
     });
   });
 

@@ -318,18 +318,71 @@ double weeklyVolumeCeiling({
   };
 }
 
+/// The build weeks that are cutbacks, **placed** rather than sampled.
+///
+/// Every `cutbackEvery` weeks through the build, except that **a cutback never
+/// opens a phase.** It moves one week later instead, and stays put only when
+/// there is no room.
+///
+/// The reason is not tidiness. A phase that begins with a deload begins with
+/// nothing, and the two phases where that costs most are race-specific — whose
+/// whole job is goal-pace work, so its opening week being easy is the one week
+/// that most needed doing — and **peak**, which on a 14-week half block is two
+/// weeks long, so a deload on its first week leaves the sharpening phase with a
+/// single quality session. A real report: 45 km a week, four days, a 10K in
+/// November, and a peak phase that was one deload and one hard week.
+///
+/// Sampling (`i % 4 == 0`) made this worse than arbitrary: with `build = 10` the
+/// phases come out 4 / 4 / 2, so the boundaries sit at `i = 0, 4, 8` — exactly
+/// the sampled positions. Both cutbacks landed on a phase opening, in every block
+/// of that length.
+Set<int> cutbackWeeks(List<PlanPhase> phases, int cutbackEvery) {
+  if (cutbackEvery <= 0) return const {};
+  final buildWeeks = buildWeekCount(phases);
+  final last = buildWeeks - 1; // the week that ramps into the taper
+  final placed = <int>{};
+  for (var i = 1; i < last; i++) {
+    if (i % cutbackEvery != 0) continue;
+    if (!isPhaseStart(phases, i)) {
+      placed.add(i);
+      continue;
+    }
+    // Never open a phase with a deload. Forward first — a deload after the
+    // phase's opening week leaves that week real work. Forward is unavailable
+    // whenever the peak is the last build phase and only two weeks long, because
+    // the week after the opening *is* the ramp into the taper. So fall back to
+    // the week before, which puts the deload at the end of the previous phase and
+    // brings the runner into the peak fresh.
+    //
+    // Only if both are unavailable does the deload stay put. A deload is a
+    // safety mechanism; dropping one to satisfy a tidiness rule is the wrong
+    // trade, and so is accepting a phase that opens with nothing.
+    if (i + 1 < last && !isPhaseStart(phases, i + 1)) {
+      placed.add(i + 1);
+    } else if (i - 1 > 0 && !isPhaseStart(phases, i - 1)) {
+      placed.add(i - 1);
+    } else {
+      placed.add(i);
+    }
+  }
+  return placed;
+}
+
+/// Whether [weekIndex] is the first week of a phase.
+bool isPhaseStart(List<PlanPhase> phases, int weekIndex) =>
+    weekIndex > 0 && phases[weekIndex] != phases[weekIndex - 1];
+
 /// The single definition of a cutback week, shared by the volume curve and
 /// both generators.
 ///
-/// These three call sites drifted apart once — the curve cut at `i % 4 == 3`
-/// while the generators cut the long run at `i % 4 == 0` — which produced long
-/// runs that jumped 4 km the week after a cutback. One definition, one
-/// behaviour.
-bool isCutbackWeek(int weekIndex, int cutbackEvery, int buildWeeks) =>
-    cutbackEvery > 0 &&
-    weekIndex > 0 &&
-    weekIndex % cutbackEvery == 0 &&
-    weekIndex < buildWeeks - 1;
+/// It takes the phase list rather than a pre-computed week count, because these
+/// call sites drifted apart once — the curve cut at `i % 4 == 3` while the
+/// generators cut the long run at `i % 4 == 0` — which produced long runs that
+/// jumped 4 km the week after a cutback. Deriving the build length here means
+/// there is **one way to call it**, so the three sites cannot disagree at all.
+bool isCutbackWeek(
+        List<PlanPhase> phases, int weekIndex, int cutbackEvery) =>
+    cutbackWeeks(phases, cutbackEvery).contains(weekIndex);
 
 /// Number of leading build weeks before the taper begins.
 int buildWeekCount(List<PlanPhase> phases) {
@@ -395,7 +448,7 @@ List<double> buildVolumeCurve({
   double? resumeAt;
 
   for (var i = 0; i < taperStart; i++) {
-    final isCutback = isCutbackWeek(i, cutbackEvery, taperStart);
+    final isCutback = isCutbackWeek(phases, i, cutbackEvery);
 
     if (isCutback) {
       resumeAt = running;

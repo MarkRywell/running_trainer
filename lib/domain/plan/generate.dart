@@ -316,12 +316,10 @@ TrainingPlan buildTrainedBasePlan({
   final weeks = <PlanWeek>[];
   var previousLongKm = 0.0;
 
-  final buildWeeks = buildWeekCount(phases);
-
   for (var i = 0; i < totalWeeks; i++) {
     final phase = phases[i];
     final weekStart = monday.add(Duration(days: 7 * i));
-    final isCutback = isCutbackWeek(i, cutbackEveryTrained, buildWeeks);
+    final isCutback = isCutbackWeek(phases, i, cutbackEveryTrained);
 
     // The 6 km floor is a floor for a normal week, not an override: on a
     // three-day week at low volume it would prescribe more than the runner

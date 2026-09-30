@@ -9,7 +9,7 @@ Only third-party dependency is `shared_preferences`; the typeface is bundled, no
 
 ```bash
 flutter pub get
-flutter test                        # 630 unit + widget, mocked storage
+flutter test                        # 642 unit + widget, mocked storage
 flutter test integration_test -d emulator-5554   # 12 on-device, REAL storage
 flutter analyze                     # must be clean
 flutter build web --release
@@ -655,6 +655,142 @@ sheet) read `workout.displayPace(paces)`. The zone *legend* in `review_screen.da
 iterates zones rather than workouts and is correctly unchanged — a legend has no
 session whose pace it could contradict.
 
+## A form that emits on every keystroke must not reseed itself
+
+**Found on a physical Samsung A35, and invisible to 630 tests.** A three-part
+finish time could not be entered: `1:59:00` refused the second colon. The first
+colon worked, and **that asymmetry is the tell**.
+
+`GoalEditor.didUpdateWidget` guards its resync with `if (widget.value != old.value)`,
+and the comment above it says the guard is there so "every keystroke" does not
+reset the field being typed into. **`GoalRace` had no `==`, so that was an identity
+comparison** — every emit produced a new instance, the comparison was always true,
+and `_seed()` rewrote the field from `formatTimeInput` on every single character.
+
+The asymmetry, traced:
+
+| typed | field | `parseTimeInput` | what happened |
+|---|---|---|---|
+| `1` | `1` | null (one part) | no goal saved yet → `_emit` returns, no emit, no rebuild |
+| `:` | `1:` | null (`int.tryParse("")`) | no goal saved yet → no emit — **first colon survives** |
+| `5` | `1:5` | 1m05s | emits → parent `setState` → reseed → `1:05` |
+| `9` | `1:059` | 1m59s | emits → reseed → `1:59` |
+| `:` | `1:59:` | null | a previous goal now **exists**, so `_emit` emits it → reseed → `1:59` — **colon erased** |
+
+**Every three-part time hits this**, because the second colon is the last character
+typed and by then a successful parse has already created a previous value.
+
+- **`GoalRace` and `RunnerProfile` now have value equality.** `RunnerProfile` is the
+  identical fault one file over — same guard, five controllers, and its height /
+  weight / weekly-km fields normalise the same way the time field did. Both are
+  value objects with a `copyWith`; identity was never the semantics anyone wanted.
+  Nothing else in the codebase compared two non-null goals with `==`, so no other
+  behaviour changed.
+- **`_seed` also skips the rewrite when the field already parses to the incoming
+  value.** This is *not* what fixed the swallowed colon and the comment says so.
+  It covers the quieter case: the runner taps a different distance while
+  part-way through typing `1:5`, which legitimately fires the resync and would
+  reformat it to `1:05` under their cursor.
+
+### The lesson is about the test
+
+**`tester.enterText` cannot see this class of bug.** It sets the whole string in one
+go, so there is a single emit and a reseed that writes back an *identical* string.
+The damage only appears when the text is built one character at a time and the
+form's own normalisation changes it. The new tests type through
+`tester.testTextInput.updateEditingValue`, one character at a time, with a
+`pumpAndSettle` between each so the parent genuinely rebuilds.
+
+**And each was verified to fail without its own fix** — the first attempt did not
+reproduce the bug at all and passed with the `==` removed, which is the signal
+that it was passing for the wrong reason. A test that cannot fail is not a test;
+this repo has two prior instances of exactly that (`zone_anchor_regression_test`
+is cited as having been written *before* the field existed, and the
+`expectNoLayoutError` guard for the nav-bar padding).
+
+**No `keyboardType` was set, deliberately.** A numeric or time keyboard removes the
+colon on some devices, so the text keyboard — where a colon is available — is the
+safer default here. The keyboard was never the cause: the first colon worked.
+
+## The third taper week belongs to a marathon, and a cutback never opens a phase
+
+**Found via a real report.** A runner with a half marathon 14 weeks out got a
+**three-week** taper, a **two-week** peak, and a peak whose first week was a
+deload — so the phase whose entire job is sharpening had **one quality week** in
+it. They also could not find a cutback anywhere and assumed there wasn't one.
+
+### Taper length was keyed on block length and ignored the distance
+
+`taperWeeksFor` read `totalWeeks >= 14 ? 3 : 2` for every non-short race. Its own
+doc comment said the third week was for "a **long block** for a **long race**",
+but the code applied it to either. A 14-week half block got the marathon taper,
+which stole two weeks of build: `base 4 / specific 4 / peak 2 / taper 3` instead
+of `peak 3 / taper 2`.
+
+```
+5K, 10K                      -> 1
+half                         -> 2, always
+marathon, >= longBlockWeeks  -> 3      (18 weeks)
+marathon, shorter            -> 2
+```
+
+The threshold is the judgement: a third taper week only pays for itself if there
+is enough build to have accumulated the fatigue it exists to clear.
+
+### Cutbacks were sampled, not placed — and sampling aligned with the phases
+
+`isCutbackWeek` was `i % 4 == 0`. With `build = 10` the phases come out
+**4 / 4 / 2**, so the boundaries sit at `i = 0, 4, 8` — *exactly* the sampled
+positions. **In every block of that length both cutbacks land on a phase opening.**
+It was arithmetic, not chance, and it is why the plan read as having no deloads:
+both were simply quiet weeks.
+
+A cutback now **never opens a phase**. It moves forward a week if it can, and
+backward if it cannot — which happens whenever peak is the last build phase and
+only two weeks long, because the week *after* peak's opening is the ramp into the
+taper. Backward is the better fallback anyway: it puts the deload at the end of
+the previous phase and brings the runner into the peak fresh.
+
+If neither is available the deload **stays put**. A deload is a safety mechanism,
+and dropping one to satisfy a tidiness rule is the wrong trade.
+
+### The three call sites can no longer drift
+
+`isCutbackWeek` had three callers — the volume curve and both generators — and
+its doc comment records that they drifted once and produced 4 km long-run jumps.
+It now takes the **phase list** and derives the build length itself, so there is
+one way to call it and the sites cannot disagree. `cutbackWeeks(phases, every)`
+returns the placed set; `isPhaseStart` is exported so the tests can assert against
+the same definition rather than re-deriving it.
+
+### The reported block, after
+
+```
+wk 1-4  base       47.3 -> 54.7          Tempo
+wk 5    base       41.0  DELOAD
+wk 6-8  specific    52.9 / 56.4 / 60.8   Tempo, 6x800m, Tempo
+wk 9    specific   45.6  DELOAD
+wk10-12 peak       54.0 / 60.8 / 60.8   12x400m x3   <- three quality weeks
+wk13-14 taper      33.4 / 27.3          Tempo, 2x2km goal pace
+wk15    race       25.1                 Half marathon
+```
+
+### The tests, and one I got wrong
+
+The invariants are a table over every block length 6–20 × all four distances: no
+cutback on a phase opening, the peak never entirely deloads, and a peak with room
+to be eaten keeps ≥2 quality weeks. That last one is scoped to peaks of ≥2 weeks,
+because a six-week block leaves a one-week peak and no amount of placement gives it
+two.
+
+**The first version of the phase-opening assertion had its predicate inverted** —
+it asserted `phases[i] == phases[i-1]` was *false*, which flags a *mid-phase*
+week as bad and would have passed a phase opening. It was caught by the diagnostic
+script disagreeing with the test, not by the test failing loudly. Two assertions
+in this repo have now been wrong in the same direction: **an assertion that cannot
+fail is worse than one that fails**, and `expect(x, isFalse)` on a boolean
+predicate deserves a second read.
+
 ## Zone anchor is CURRENT FITNESS, never the goal race pace — reversed
 
 **Found via a real report.** A runner with a 52:25 10K, a 1:56:10 half and a 49:00 10K goal — a
@@ -964,7 +1100,7 @@ runner's target.
 ## Tests
 
 ```bash
-flutter test                                  # 630 unit + widget, mocked storage
+flutter test                                  # 642 unit + widget, mocked storage
 flutter test integration_test -d emulator-5554 # 12 on-device, REAL storage
 ```
 

@@ -107,7 +107,8 @@ TrainingPlan buildBeginnerPlan({
     // it promotes to non-null wherever `raceWeek` is true.
     final raceWeek = isLast ? goal : null;
     final hasGoal = raceWeek != null;
-    final cutback = !hasGoal && isCutbackWeek(i, cutbackEveryBeginner, totalWeeks);
+    final cutback =
+        !hasGoal && isCutbackWeek(phases, i, cutbackEveryBeginner);
 
     final volume = raceWeek != null
         ? raceWeek.distance.metres / 1000 + 6

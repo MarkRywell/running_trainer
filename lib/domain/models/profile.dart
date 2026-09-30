@@ -120,4 +120,42 @@ class RunnerProfile {
         weightKg: (json['weightKg'] as num?)?.toDouble(),
         estimatedWeeklyKm: (json['estimatedWeeklyKm'] as num?)?.toDouble(),
       );
+
+  /// Value equality.
+  ///
+  /// `ProfileEditor.didUpdateWidget` guards its resync with
+  /// `widget.value != old.value`, and that comment says the guard is there so
+  /// "every keystroke" does not reset the field being typed into. **Without this
+  /// the guard is an identity comparison and does the exact opposite**: a form
+  /// emits a new profile on every keystroke, the parent rebuilds, the instances
+  /// differ, and all five text fields are reseeded under the user's hands.
+  ///
+  /// It was invisible for the *name* — a name re-formats to itself — and would
+  /// bite the fields that normalise, the same way it bit the goal editor's finish
+  /// time. This is a value object with a `copyWith`; identity was never the
+  /// semantics anyone wanted.
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is RunnerProfile &&
+          other.name == name &&
+          other.age == age &&
+          other.gender == gender &&
+          other.monthsRunning == monthsRunning &&
+          other.daysPerWeek == daysPerWeek &&
+          other.heightCm == heightCm &&
+          other.weightKg == weightKg &&
+          other.estimatedWeeklyKm == estimatedWeeklyKm;
+
+  @override
+  int get hashCode => Object.hash(
+        name,
+        age,
+        gender,
+        monthsRunning,
+        daysPerWeek,
+        heightCm,
+        weightKg,
+        estimatedWeeklyKm,
+      );
 }
