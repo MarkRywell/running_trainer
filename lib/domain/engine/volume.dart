@@ -36,9 +36,98 @@ double longRunShare(int runDays) => switch (runDays) {
 /// under two-thirds of it even though it is the part that feels like the run.
 const double tempoHardFraction = 0.60;
 
-/// Share of an interval session's distance spent at interval pace. The
-/// recoveries and the warm-up are easy jogging.
+/// Fallback share of a set session's distance spent at rep pace.
+///
+/// **Only** for the legacy 3 min on / 3 min jog set, and only when no rep
+/// structure is available to derive from. It was a flat constant applied to
+/// every interval session, which is wrong by construction: 400m x 10 with 90s
+/// rest is roughly 56% hard by distance, 2km x 3 is around 75%, and 3/3 is 32%.
+/// Reading all three as 0.32 made `hardVolumeKm` — and therefore the 80/20
+/// check — a fiction. See [hardFractionForReps], which is the real answer.
 const double intervalHardFraction = 0.32;
+
+/// Warm-up and cool-down around a set session, in minutes.
+const int repWarmUpMinutes = 10;
+const int repCoolDownMinutes = 5;
+
+/// The shape of a repetition set: how far, how hard, how much recovery.
+///
+/// Rep **distance** is what defines the format, and it is what picks the pace —
+/// short reps are run at interval effort, long ones at threshold. Without that
+/// coupling, "2km x 3" would be three interval-pace kilometres, which is a
+/// different and much more damaging session than the one the name implies.
+class RepFormat {
+  const RepFormat({
+    required this.distanceM,
+    required this.recovery,
+    required this.zone,
+    this.work,
+    this.minReps = 3,
+    this.maxReps = 12,
+  });
+
+  /// A time-based set, for the base phase. Kept as its own format rather than
+  /// converted to a distance, because 3 minutes at interval pace *is* the
+  /// prescription and the runner does not think in metres for it.
+  const RepFormat.timed()
+      : distanceM = null,
+        work = const Duration(minutes: 3),
+        recovery = const Duration(minutes: 3),
+        zone = IntensityZone.interval,
+        minReps = 4,
+        maxReps = 8;
+
+  /// Rep distance in metres, or null for a time-based set.
+  final int? distanceM;
+
+  /// How long one rep lasts, for a time-based set. Null when [distanceM] is set.
+  final Duration? work;
+
+  /// Recovery between reps, after the first.
+  final Duration recovery;
+
+  /// The zone the reps themselves are run at.
+  final IntensityZone zone;
+
+  /// Fewest reps worth prescribing. Below this the set is not a set.
+  final int minReps;
+
+  /// Most reps this format will ever prescribe, regardless of room.
+  final int maxReps;
+
+  bool get isTimed => distanceM == null;
+}
+
+/// Share of a set session's distance actually run at rep pace.
+///
+/// Derived from the structure rather than assumed, because the recoveries and
+/// the warm-up are easy jogging and their share depends entirely on how many
+/// there are. 400m x 10 with 90s rest and a 10/5 warm-up and cool-down is about
+/// 56% hard by distance, not the 32% the old constant claimed.
+double hardFractionForReps({
+  required int reps,
+  required int? repDistanceM,
+  required Duration? repWork,
+  required Duration recovery,
+  required double repPaceSecondsPerKm,
+  required double easyPaceSecondsPerKm,
+}) {
+  if (reps <= 0) return 0;
+
+  // A time-based rep has no distance of its own, so its distance comes from how
+  // long it is held at the rep pace. A distance-based rep already knows.
+  final hardKm = repDistanceM != null
+      ? repDistanceM * reps / 1000
+      : (repWork?.inSeconds ?? 0) / repPaceSecondsPerKm * reps;
+
+  // Recoveries only exist *between* reps, so a set of 1 has none.
+  final easySeconds = (repWarmUpMinutes + repCoolDownMinutes) * 60 +
+      recovery.inSeconds * (reps - 1);
+  final easyKm = easySeconds / easyPaceSecondsPerKm;
+
+  final total = hardKm + easyKm;
+  return total <= 0 ? 0 : (hardKm / total).clampD(0.0, 1.0);
+}
 
 /// A quality session's length, in km. Defined **once**, shared by both
 /// generators — they had drifted into carrying separate copies of a flat 9 km
@@ -48,9 +137,41 @@ const double intervalHardFraction = 0.32;
 /// 57% of a 15 km week, which made the tempo the single biggest thing in the
 /// plan and left it *longer than the long run* on a three-day week. A tempo is
 /// meant to be the hardest session of the week, not the longest.
+///
+/// This was written as a nested clamp — `base.clampD(base.clampD(5, 9), 15)` —
+/// which reads as "clamp to 5–9, then allow up to 15" and does none of that.
+/// The inner clamp produced 9, the outer then clamped *9* into `[base, 15]`, and
+/// since 9 is below `base` it returned `base`. So above roughly 41 km a week the
+/// 9 km ceiling never applied at all, and a quality session grew without limit:
+/// 22% of the week, twice over on a two-quality week, which is what pushed
+/// `easyFraction` under the 80/20 floor. Nothing caught it because the fixtures
+/// were all small weeks.
+///
+/// The clamp that is actually wanted is monotone and has a single ceiling.
 double qualityDistanceKm(double targetVolume) {
-  final base = targetVolume * 0.22;
-  return base.clampD(base.clampD(5.0, 9.0), 15.0);
+  return (targetVolume * 0.22).clampD(minQualityKm, maxQualityKm);
+}
+
+/// Shortest a quality session may be, in km.
+const double minQualityKm = 5.0;
+
+/// Longest a single quality session may be, in km.
+///
+/// Fifteen is not a comfortable number on its own — it is the *ceiling*, and
+/// what actually binds first on a big week is the budget being shared between
+/// two sessions. See [qualityKmPerSession].
+const double maxQualityKm = 15.0;
+
+/// Quality distance for **one** session, out of a week that carries [count].
+///
+/// The 22% is a **week-level** budget. Giving each session the whole of it
+/// meant a two-quality week prescribed 44% of its volume as hard work, and
+/// that is the second half of why the 80/20 invariant was being broken: not only
+/// were the sessions hard, there were twice as many of them as there should be.
+double qualityKmPerSession(double targetVolume, int count) {
+  if (count <= 1) return qualityDistanceKm(targetVolume);
+  return (qualityDistanceKm(targetVolume) / count)
+      .clampD(minQualityKm * 0.6, maxQualityKm);
 }
 
 /// Longest a quality session may be relative to the long run.
@@ -107,6 +228,40 @@ const double cutbackFactor = 0.75;
 /// Cutback cadence, in weeks.
 const int cutbackEveryTrained = 4;
 const int cutbackEveryBeginner = 4;
+
+/// Weekly volume through the taper, as a fraction of the block's peak week.
+///
+/// Front-loaded, and ending inside Daniels' 40–50% band rather than merely
+/// passing through it. The final pre-race week is the one the runner actually
+/// races in, so that is the week the number is anchored on.
+const Map<int, List<double>> taperSchedule = {
+  2: [0.55, 0.45],
+  3: [0.60, 0.50, 0.42],
+};
+
+/// The fraction of peak for taper week [index] of [total].
+///
+/// A taper length outside [taperSchedule] is generated by compounding [taperDrop]
+/// instead. That path exists for the base block, which opts out of tapering
+/// entirely by asking for a flat curve — it must not be given a hardcoded
+/// schedule, or a base block would suddenly taper.
+double taperFractionAt(int index, int total, {required double taperDrop}) {
+  final schedule = taperSchedule[total];
+  if (schedule != null) {
+    return schedule[index.clampI(0, schedule.length - 1)];
+  }
+  var t = 1.0;
+  for (var k = 0; k <= index; k++) {
+    t *= taperDrop;
+  }
+  return t;
+}
+
+/// Weekly volume of the final taper week, as a fraction of peak.
+///
+/// Asserted directly in the taper tests: this is the number the runner's last
+/// full week before the race, and the one the whole taper is shaped around.
+const double finalTaperFractionTarget = 0.42;
 
 /// Longest a beginner long run grows, per week, in km.
 const double beginnerLongRunGrowth = 2.0;
@@ -265,15 +420,24 @@ List<double> buildVolumeCurve({
     }
   }
 
-  // Taper: strictly descending, never dipping below zero.
+  // Taper: an explicit schedule as a fraction of peak, not a compounding rate.
+  //
+  // This was `t *= taperDrop` applied once per week, so a three-week taper ran
+  // 70/49/34% of peak. The first taper week therefore came in at ~70% of peak —
+  // the runner saw 59.7 km of peak and 40.2 km of taper and reasonably read that
+  // as barely a taper. Daniels' rule is 40–50% of peak by the *final* pre-race
+  // week, with the drop front-loaded, and a compounding rate cannot express
+  // "front-loaded": it spends the taper too high and then overshoots low.
+  //
+  // An explicit schedule is also directly assertable, where a compounding factor
+  // has to be reverse-engineered from its own output to be tested at all.
   final taperWeeks = <int>[];
   for (var i = taperStart; i < n; i++) {
     if (phases[i] == PlanPhase.taper) taperWeeks.add(i);
   }
-  var t = peak;
   for (var k = 0; k < taperWeeks.length; k++) {
-    t *= taperDrop;
-    volumes[taperWeeks[k]] = t;
+    final fraction = taperFractionAt(k, taperWeeks.length, taperDrop: taperDrop);
+    volumes[taperWeeks[k]] = peak * fraction;
   }
 
   // A race week is the lightest week of the block apart from the taper tail.
@@ -393,19 +557,16 @@ List<Workout> attachWeekdays(List<Workout> runs, List<int> pattern) {
   ];
 }
 
-Workout _withWeekday(Workout w, int weekday) => weekday == 0
-    ? w
-    : Workout(
-        title: w.title,
-        type: w.type,
-        zone: w.zone,
-        description: w.description,
-        distanceKm: w.distanceKm,
-        targetDuration: w.targetDuration,
-        isQuality: w.isQuality,
-        hardFractionOfDistance: w.hardFractionOfDistance,
-        weekday: weekday,
-      );
+/// Attaches [weekday] to a workout that does not have one.
+///
+/// Delegates to [Workout.withWeekday] rather than rebuilding the field list
+/// here. This function *was* a second copy of that list, and it silently dropped
+/// every field added to [Workout] after it was written — first the rep fields,
+/// which turned a session titled "800 m reps" into one with no reps on it, and
+/// which nobody would see because the title still looked right. A copy of a
+/// field list is a place fields go to die; the model owns its own copy.
+Workout _withWeekday(Workout w, int weekday) =>
+    weekday == 0 ? w : w.withWeekday(weekday);
 
 /// How many run days a week actually prescribes.
 ///
@@ -465,7 +626,10 @@ PlanWeek enforceSafety(PlanWeek week) {
     for (final w in week.workouts)
       if (w == long && cappedDistance != w.distanceKm)
         // `weekday` has to survive the rebuild, or capping a long run silently
-        // detaches it from the day a session log would refer to.
+        // detaches it from the day a session log would refer to. This is the one
+        // place a field list is still written out by hand; it is safe only
+        // because a long run is never a rep session. Anything else rebuilt this
+        // way must go through [Workout.withWeekday] instead.
         _withWeekday(
           Workout(
             title: w.title,

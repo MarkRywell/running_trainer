@@ -124,12 +124,27 @@ void main() {
       );
     });
 
-    test('it contains hard intervals, which a base-only block cannot', () {
+    test('the goal block is not just the base block with a taper bolted on', () {
+      // The discriminator used to be "the base block has no intervals", and a
+      // base block with no goal race now *does* have them — twelve identical
+      // tempos was the actual defect, not a safety property. So the difference
+      // is no longer the presence of a session type but the shape: the goal
+      // block runs a peak, a taper and a race, and tapers its volume.
       final types = withGoal.weeks.expand((w) => w.workouts).map((k) => k.type);
       expect(types, contains(WorkoutType.intervals));
+
+      expect(withGoal.weeks.map((w) => w.phase), contains(PlanPhase.peak));
+      expect(
+        withoutGoal.weeks.map((w) => w.phase),
+        isNot(contains(PlanPhase.peak)),
+        reason: 'with no race there is nothing to peak for',
+      );
+
+      // Both blocks carry repetition work — a no-goal runner on 4 days used to
+      // get twelve tempos and no sets at all, which is what this asserts against.
       final baseTypes =
           withoutGoal.weeks.expand((w) => w.workouts).map((k) => k.type);
-      expect(baseTypes, isNot(contains(WorkoutType.intervals)));
+      expect(baseTypes, contains(WorkoutType.intervals));
     });
 
     test('the race week actually prescribes the race', () {

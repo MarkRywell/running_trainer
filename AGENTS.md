@@ -241,15 +241,92 @@ never from a test; when a report contradicts the code, the stored data wins.
 
 Still open, unchanged by this fix:
 
-- **Without a goal race, intervals are structurally unreachable.** `buildTrainedBasePlan` sets
-  `phases = List.filled(12, PlanPhase.base)`, and `_quality` only emits intervals in
-  `PlanPhase.specific`. Twelve identical tempos.
 - **The week view does not say when a plan has no hard sessions**, so a beginner route reads as a
   design choice rather than a routing outcome. This is what made the bug invisible to the runner.
-- **`suppressQuality` is blunt at 3 days a week**, where the tempo is the only quality session. The
-  beginner-block "zero quality is safe" property covers a *starting* block, not an end state for a
-  trained runner.
-- **No 400m or 1000m rep formats** — `intervalRep`/`intervalRecovery` are hardcoded to 3 min / 3 min.
+- **`suppressQuality` is blunt at 3 days a week**, where the tempo is the only quality session — the
+  taper is now exempt, but a cutback at three days is still all-easy. The beginner-block "zero quality
+  is safe" property covers a *starting* block, not an end state for a trained runner.
+
+Resolved since, in "Rep formats and a real taper":
+
+- ~~Without a goal race, intervals are structurally unreachable.~~
+- ~~No 400m or 1000m rep formats.~~
+
+## Rep formats, and a taper that keeps its intensity
+
+**Found via a real report, twice in one.** A runner at 45 km a week on four days, with nothing to race,
+reported two things: their only speed session was ever a tempo, and a taper that opened at 40.2 km off
+a 59.7 km peak did not look like a taper. Both were correct, and neither was a tuning problem.
+
+**Intervals needed a goal race to exist at all.** `_quality` emitted a set only when
+`phase == PlanPhase.specific`, and `buildTrainedBasePlan` was `List.filled(12, PlanPhase.base)`. There
+was no code path from "trained runner, no race" to a repetition session. `Workout` had no rep field
+either — the format was two hardcoded constants interpolated into a description string, so 400m x 10
+and 800m x 5 were not representable, only 3 min on / 3 min jog.
+
+Four rules, each of which is a way the obvious implementation is wrong:
+
+- **Rep distance picks the pace.** `RepFormat` carries its own `zone`: short reps at interval effort,
+  long ones at threshold. A rep format that is only `{distance, count, rest}` makes 2km x 3 mean three
+  interval-pace kilometres, which is a different and much more damaging session than the name implies.
+- **The rep count is solved, and the format falls back to a *shorter* rep.** `solveSet` takes the
+  largest set that fits `qualityDistanceKm`. A week too small for ten 400s gets shorter reps, never a
+  truncated set — two 400s is not a set of 400s. Fixing the count instead would mean the session's
+  distance came from somewhere else and the week stopped adding up.
+- **`hardFractionOfDistance` is derived, never assumed.** `intervalHardFraction = 0.32` was one flat
+  constant applied to every interval session, and it is roughly right for exactly one format. 400m x
+  10 at 90s recovery is ~47% hard by distance and 2km x 3 is ~70%, so `hardVolumeKm` — and therefore
+  the 80/20 check — was a fiction for every format but one. 0.32 is now a fallback.
+- **A rebuilt `Workout` must go through `Workout.withWeekday`.** `_withWeekday` in `volume.dart` was
+  a hand-written second copy of the field list; when the rep fields were added it silently dropped
+  them, and a session titled "800 m reps" rendered with no reps on it. The title still looked right,
+  so nothing reported it. **A copy of a field list is a place fields go to die.**
+
+**At most one set per week**, which is a hard rule. Two sets pushed `easyFraction` to 0.75 against a
+0.77 floor, so a double-quality week is tempo plus set. That also required the 22% quality budget to be
+a **week-level** budget split between sessions: giving each session the whole of it meant a
+two-quality week prescribed 44% of its volume as hard work.
+
+**`qualitySessionsFor` is day-aware, and that fixed a silent mismatch.** It returned 2 for a four-day
+specific week while the placement guard `i == 3 && days > 4` could never fire — index 3 *is* the long
+run on `[1,3,5,7]`. The second session fell through to the easy branch, so the week budgeted two hard
+sessions, prescribed one, and still summed to its target. Every invariant passed. `qualitySlots` derives
+the positions from the day count, and the test asserts the **count**, not merely that a hard session
+exists. Alternating on `weekInPhase` rather than the absolute week keeps the set count from depending
+on where rounding put the phase boundary.
+
+**The taper dropped volume and sharpness together.** `qualitySessionsFor(taper) == 0`, so the taper
+had *no* quality work at all while `PlanPhase.taper`'s blurb promised "Volume down, intensity kept" —
+a copy/code contradiction, which by this repo's history is the class of bug that ships. The final
+taper week now carries one goal-pace set, shape chosen by goal distance (5K 4x800m, 10K 3x1200m, half
+and marathon 2x2km at marathon pace), exempt from `suppressQuality` and budgeted against the long run
+so it can never be the week's longest run. Taper work is **sharp, not big**: under 25% of the week's
+volume.
+
+**Two more taper faults, both found by the tests rather than by reading:**
+
+- The drop was `t *= 0.70` compounded per week, so a three-week taper ran 70/49/34% of peak and the
+  *first* week sat at ~70%. Replaced with an explicit `taperSchedule` of fractions of peak
+  (3wk 0.60/0.50/0.42, 2wk 0.55/0.45) — a compounding rate cannot express "front-loaded", and an
+  explicit schedule is directly assertable rather than reverse-engineered from its own output.
+- The 3 km easy-day floor **inverted the taper**: the final week's budget fell below `3 x easyDays`,
+  the floor took over, and the week came out *larger* than the one before it (22.7 km against 19.1).
+  A shorter run in the taper is not a defect, so `taperEasyRunFloorKm` comes down to 2.0.
+
+**Three pre-existing bugs surfaced while doing this, all of which had been hiding:**
+
+- **`qualityDistanceKm` had no ceiling at all.** It was `base.clampD(base.clampD(5, 9), 15)`, which
+  reads as "clamp to 5-9, then allow up to 15" and does neither: the inner clamp produced 9, the outer
+  clamped *9* into `[base, 15]`, and since 9 < base it returned `base`. Above ~41 km a week a quality
+  session grew without limit. Nothing caught it because every fixture was a small week. This is the
+  same shape as the old `maxLongRunFraction` fault — a constant that silently undid the generator.
+- **A copy of the `Workout` field list**, described above.
+- **`_qualitySessionsFor` tested `count <= 1`**, so a cutback or taper week with `count == 0` built a
+  tempo, subtracted 5.9 km from its easy budget, and never placed it — every taper week came out ~6 km
+  short and the taper stopped descending. Written by me, in the code being changed, and caught by the
+  taper test an hour later.
+
+`test/domain/rep_format_test.dart` and `test/domain/taper_methodology_test.dart` are the guards.
 
 ## Zone anchor is CURRENT FITNESS, never the goal race pace — reversed
 

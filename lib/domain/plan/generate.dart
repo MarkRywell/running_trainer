@@ -245,8 +245,10 @@ double _impliedVolume(FitnessAssessment fitness) {
 
 /// Seeds a plan for an experienced runner with no goal race set.
 ///
-/// Not the same as the periodized race block: no taper, no peak, one quality
-/// session a week, and volume built on general durability.
+/// Not the same as the periodized race block: no taper, no peak, and volume
+/// built on general durability. It does still run a base/specific split, so a
+/// runner with no goal race gets repetition work in the back third — see
+/// [trainedBaseSpecificWeeks] for why that is not optional.
 TrainingPlan buildTrainedBasePlan({
   required RunnerProfile profile,
   required TrainingPaces paces,
@@ -263,7 +265,7 @@ TrainingPlan buildTrainedBasePlan({
   final ceiling = weeklyVolumeCeiling(beginner: false, goal: null, currentWeeklyKm: currentWeeklyKm);
   final seed = currentWeeklyKm.clampD(15.0, ceiling);
 
-  final phases = List<PlanPhase>.filled(totalWeeks, PlanPhase.base);
+  final phases = trainedBasePhases(totalWeeks);
   final dayCount = daysPerWeek.clampI(3, 6);
   final volumes = buildVolumeCurve(
     phases: phases,
@@ -292,6 +294,7 @@ TrainingPlan buildTrainedBasePlan({
   final buildWeeks = buildWeekCount(phases);
 
   for (var i = 0; i < totalWeeks; i++) {
+    final phase = phases[i];
     final weekStart = monday.add(Duration(days: 7 * i));
     final isCutback = isCutbackWeek(i, cutbackEveryTrained, buildWeeks);
 
@@ -308,15 +311,16 @@ TrainingPlan buildTrainedBasePlan({
     var week = PlanWeek(
       weekNumber: i + 1,
       startDate: weekStart,
-      phase: PlanPhase.base,
+      phase: phase,
       targetVolumeKm: volumes[i],
       isCutback: isCutback,
       workouts: _baseWeek(
+        phase: phase,
         pattern: pattern,
         longKm: longKm,
         targetVolume: volumes[i],
         paces: paces,
-        weekIndex: i,
+        blockWeek: i,
         isCutback: isCutback,
         suppressQuality: directive.suppressQuality,
       ),
@@ -348,12 +352,86 @@ TrainingPlan buildTrainedBasePlan({
   );
 }
 
+/// The base block's single quality session.
+///
+/// Alternates tempo and repetition work across the **whole** block, with the rep
+/// ladder advancing as the block goes on, so a runner with no goal race sees
+/// 400m, 800m, 1km and 2km sets rather than the twelve identical tempos this
+/// used to produce.
+///
+/// Doing it in the base phase and not only the specific phase is the point. The
+/// "base builds the engine, sharpening comes later" argument is a beginner's
+/// argument — it is why [buildBeginnerPlan] prescribes no quality work at all.
+/// This is a *trained* runner with 45 km a week and no finish line, and a
+/// coached runner in that position does sharpen. What they do not get here is a
+/// taper or a peak, because there is nothing to taper or peak for.
+Workout _baseQuality(
+  PlanPhase phase,
+  TrainingPaces paces,
+  double km,
+  double weeklyKm,
+  int blockWeek,
+) {
+  if (blockWeek < baseBlockFirstSetWeek || blockWeek.isEven) {
+    final hard =
+        paces.threshold.overDistance(km * 1000 * tempoHardFraction).inMinutes;
+    return Workout(
+      title: 'Tempo',
+      type: WorkoutType.tempo,
+      zone: IntensityZone.threshold,
+      distanceKm: km,
+      targetDuration: paces.easy.overDistance(km * 1000),
+      isQuality: true,
+      hardFractionOfDistance: tempoHardFraction,
+      description:
+          '10 min warm-up, then $hard min at ${paces.threshold.format()}/km — '
+          'comfortably hard. 5 min cool down.',
+    );
+  }
+  return repSetSession(phase, paces, km, weeklyKm, blockWeek ~/ 2,
+      ladderFrom: (blockWeek ~/ 2 - baseBlockFirstSetWeek ~/ 2).clampI(0, 3));
+}
+
+/// First week of a base block that carries a set rather than a tempo.
+///
+/// Week 5, not week 2, and that is a decision rather than a default. The first
+/// four weeks of a base block are shared with the opening of any goal block, so
+/// setting a goal does not visibly rewrite the plan a runner is already
+/// following — asserted in `goal_changes_the_plan_test`, because the original
+/// report was a runner who set a goal, saw nothing change, removed it, and saw
+/// nothing change again. Sharp work in week 2 would break that prefix in order
+/// to fix a problem the runner did not have.
+const int baseBlockFirstSetWeek = 5;
+
+/// Phase layout of a base block with no goal race.
+///
+/// This used to be `List.filled(12, PlanPhase.base)` — twelve identical weeks,
+/// one continuous tempo each. A real report is the reason that is wrong: a runner
+/// at 45 km a week on four days, with no race on the calendar, was given twelve
+/// weeks in which the only hard running was a threshold block. No goal race is
+/// not a reason to stop doing repetition work; it is only a reason not to
+/// periodise toward a finish line.
+///
+/// The specific phase in the back third is what gives those runners 800m and
+/// 2km reps. It is deliberately *not* a peak phase: there is nothing to peak
+/// for, and inventing a peak would imply a taper that never comes.
+List<PlanPhase> trainedBasePhases(int totalWeeks) {
+  final specific = totalWeeks < 4
+      ? 0
+      : (totalWeeks * 0.30).round().clampI(1, totalWeeks - 1);
+  return [
+    ...List.filled(totalWeeks - specific, PlanPhase.base),
+    ...List.filled(specific, PlanPhase.specific),
+  ];
+}
+
 List<Workout> _baseWeek({
+  required PlanPhase phase,
   required List<int> pattern,
   required double longKm,
   required double targetVolume,
   required TrainingPaces paces,
-  required int weekIndex,
+  required int blockWeek,
   required bool isCutback,
   required bool suppressQuality,
 }) {
@@ -362,7 +440,8 @@ List<Workout> _baseWeek({
   final longIndex = days - 1;
   final tempoKm = suppressQuality
       ? 0.0
-      : capQualityAgainstLong(qualityDistanceKm(targetVolume), longKm);
+      : capQualityAgainstLong(
+          qualityKmPerSession(targetVolume, 1), longKm);
   final easyDays = days - 1 - (isCutback || suppressQuality ? 0 : 1);
   final easyKm =
       ((targetVolume - tempoKm - longKm) / easyDays.clampI(1, 99))
@@ -389,19 +468,7 @@ List<Workout> _baseWeek({
         description: 'Deliberately slow.',
       ));
     } else if (i == 1 && !isCutback && !suppressQuality) {
-      workouts.add(Workout(
-        title: 'Tempo',
-        type: WorkoutType.tempo,
-        zone: IntensityZone.threshold,
-        distanceKm: tempoKm,
-        targetDuration: paces.easy.overDistance(tempoKm * 1000),
-        isQuality: true,
-        hardFractionOfDistance: tempoHardFraction,
-        description:
-            '10 min warm-up, then ${paces.threshold.overDistance(tempoKm * 1000 * tempoHardFraction).inMinutes}'
-            ' min at ${paces.threshold.format()}/km — comfortably hard. '
-            '5 min cool down.',
-      ));
+      workouts.add(_baseQuality(phase, paces, tempoKm, targetVolume, blockWeek));
     } else {
       workouts.add(Workout(
         title: 'Easy run',

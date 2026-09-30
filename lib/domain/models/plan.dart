@@ -49,10 +49,9 @@ extension PlanPhaseLabel on PlanPhase {
       };
 
   String get blurb => switch (this) {
-        PlanPhase.base => 'Build volume with one quality session a week.',
-        PlanPhase.specific =>
-          'Long runs with goal-pace segments. Endurance for your target race.',
-        PlanPhase.peak => 'Highest volume of the block, two quality sessions.',
+        PlanPhase.base => 'Build volume. One or two hard sessions a week.',
+        PlanPhase.specific => 'Goal-pace long runs, and sharpening work.',
+        PlanPhase.peak => 'The biggest weeks, and the hardest.',
         PlanPhase.taper => 'Volume down, intensity kept. Arrive fresh.',
         PlanPhase.raceWeek => 'Race day. Everything before it is recovery.',
         PlanPhase.baseBlock => 'All easy. Build the habit before the fitness.',
@@ -70,6 +69,10 @@ class Workout {
     this.isQuality = false,
     this.hardFractionOfDistance = 0,
     this.weekday,
+    this.reps,
+    this.repDistanceM,
+    this.repRecovery,
+    this.repZone,
   });
 
   final String title;
@@ -109,6 +112,39 @@ class Workout {
   /// long run silently detaches it from the day it belongs to.
   final int? weekday;
 
+  /// Repetitions in a set session, and the shape of each.
+  ///
+  /// Null for every session that is not a set — tempos, long runs, races. They
+  /// used to be the *only* interval shape the app could express, because the
+  /// set lived in a description string built from two hardcoded constants. The
+  /// runner asked for 400m x 10 and 800m x 5 and neither was representable.
+  ///
+  /// These are separate fields rather than a formatted string for the same
+  /// reason [weekday] is: anything that rebuilds a [Workout] must carry them
+  /// across, and a lost [reps] renders a set-structured session as a shapeless
+  /// one **without any error**. [enforceSafety] rebuilds the long run, so this
+  /// is a live trap rather than a theoretical one.
+  final int? reps;
+
+  /// Length of one repetition, in metres. Null unless [reps] is set.
+  ///
+  /// This is what makes a rep format a *format*. Rep distance picks the pace a
+  /// rep is run at — short reps at interval effort, long ones at threshold — so
+  /// 400m x 10 and 2km x 3 are genuinely different sessions, not one session
+  /// with a different number typed into the description.
+  final int? repDistanceM;
+
+  /// Recovery between repetitions, after the first. Null unless [reps] is set.
+  final Duration? repRecovery;
+
+  /// The zone the repetitions themselves are run at.
+  ///
+  /// Distinct from [zone] because a set session's headline zone and its rep pace
+  /// are not always the same thing. Every rep here is run at one pace, and the
+  /// warm-up, recoveries and cool-down are easy — so this is what the hard
+  /// fraction is measured against.
+  final IntensityZone? repZone;
+
   /// A copy placed on [day]. Used where a workout is built by hand rather than
   /// by a day pattern, and must not lose the other fields doing so.
   Workout withWeekday(int day) => Workout(
@@ -121,6 +157,10 @@ class Workout {
         isQuality: isQuality,
         hardFractionOfDistance: hardFractionOfDistance,
         weekday: day,
+        reps: reps,
+        repDistanceM: repDistanceM,
+        repRecovery: repRecovery,
+        repZone: repZone,
       );
 
   @override

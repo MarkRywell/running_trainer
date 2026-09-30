@@ -380,7 +380,35 @@ void main() {
 
     test('quality sessions are never more than two', () {
       for (final p in PlanPhase.values) {
-        expect(qualitySessionsFor(p), lessThanOrEqualTo(2), reason: p.name);
+        for (final days in [3, 4, 5, 6]) {
+          expect(qualitySessionsFor(p, days), lessThanOrEqualTo(2),
+              reason: '${p.name} at $days days');
+        }
+      }
+    });
+
+    test('a four-day week gets one quality session, not two', () {
+      // The count used to be a flat 2 for specific/peak, and the placement
+      // guard could not fire below five days — so a 4-day week budgeted two hard
+      // sessions out of its volume and then prescribed one. See qualitySlots.
+      for (final p in [PlanPhase.specific, PlanPhase.peak]) {
+        expect(qualitySessionsFor(p, 3), 1, reason: p.name);
+        expect(qualitySessionsFor(p, 4), 1, reason: p.name);
+        expect(qualitySessionsFor(p, 5), 2, reason: p.name);
+        expect(qualitySessionsFor(p, 6), 2, reason: p.name);
+      }
+    });
+
+    test('quality slots never collide with the long run or recovery', () {
+      for (final days in [3, 4, 5, 6]) {
+        for (final count in [1, 2]) {
+          if (count > qualitySessionsFor(PlanPhase.peak, days)) continue;
+          final slots = qualitySlots(days, count);
+          expect(slots.length, count, reason: '$days days, $count');
+          expect(slots, isNot(contains(0)), reason: 'recovery day');
+          expect(slots, isNot(contains(days - 1)), reason: 'long run day');
+          expect(slots.toSet().length, slots.length, reason: 'no duplicates');
+        }
       }
     });
   });

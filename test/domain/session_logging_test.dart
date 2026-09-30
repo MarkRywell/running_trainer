@@ -431,11 +431,20 @@ void main() {
 
       // The goal race itself is not something a directive may remove, so this is
       // about tempo and interval work only.
-      bool hasTraining(PlanWeek w) =>
-          w.workouts.any((s) => isQualityType(s.type) && s.type != WorkoutType.race);
+      bool hasTraining(PlanWeek w) => w.workouts
+          .any((s) => isQualityType(s.type) && s.type != WorkoutType.race);
 
-      expect(without.weeks.any(hasTraining), isFalse,
-          reason: 'no hard training sessions should remain');
+      // The taper is the one exemption. Its goal-pace session is the whole point
+      // of the phase, and at three days a week suppressing it would leave a
+      // runner arriving for their goal race with no hard running in three weeks.
+      // So the assertion is "nothing survives *outside* the taper", not "nothing
+      // survives at all" — which is what it used to say, and which is why the
+      // exemption would otherwise have looked like the directive failing.
+      final surviving = without.weeks
+          .where((w) => w.phase != PlanPhase.taper && hasTraining(w))
+          .toList();
+      expect(surviving, isEmpty,
+          reason: 'weeks ${surviving.map((w) => w.weekNumber)} kept hard work');
       expect(with_.weeks.any(hasTraining), isTrue);
 
       // What must hold: the hard work is what disappears. Total mileage may move
@@ -448,15 +457,15 @@ void main() {
         final before = with_.weeks[i];
         final after = without.weeks[i];
 
-        expect(after.hardVolumeKm, 0,
-            reason: 'week ${before.weekNumber} still prescribes hard running');
-        // Cutbacks and taper weeks carry no quality work by design, so there is
-        // nothing for the directive to remove from them and nothing to assert.
+        // The taper's goal-pace session survives the directive by design, so the
+        // "no hard volume" assertion cannot apply to it.
         if (before.isCutback ||
             before.phase == PlanPhase.taper ||
             before.phase == PlanPhase.raceWeek) {
           continue;
         }
+        expect(after.hardVolumeKm, 0,
+            reason: 'week ${before.weekNumber} still prescribes hard running');
         expect(before.hardVolumeKm, greaterThan(0),
             reason: 'week ${before.weekNumber} had no hard work to remove');
 
