@@ -364,7 +364,13 @@ class _WeekHeader extends StatelessWidget {
             ],
           ),
           const SizedBox(height: AppSpacing.sm),
-          Text(week.phase.blurb, style: theme.bodyMuted),
+          // The phase length, not the phase name: a two-week peak is not
+          // "the biggest weeks", and this is the only place the runner is told
+          // what shape their block is in.
+          Text(
+            week.phase.blurbFor(week.phaseLengthIn(plan)),
+            style: theme.bodyMuted,
+          ),
           if (log.difficulty != null) ...[
             const SizedBox(height: AppSpacing.sm),
             _DifficultyLine(difficulty: log.difficulty!),
@@ -828,7 +834,10 @@ class _WeekScreen extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(height: 4),
-                      Text(week.phase.blurb, style: theme.bodyMuted),
+                      Text(
+                        week.phase.blurbFor(week.phaseLengthIn(plan)),
+                        style: theme.bodyMuted,
+                      ),
                       const SizedBox(height: 8),
                       Text(
                         '${formatKm(week.targetVolumeKm)} km · '

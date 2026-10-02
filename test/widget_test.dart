@@ -287,8 +287,10 @@ void main() {
       );
       await tester.pumpWidget(app(controller));
 
-      await tester.ensureVisible(find.text('Recovery run'));
-      await tester.pumpAndSettle();
+      // Scrolled to rather than `ensureVisible`d, because a runner held at their
+      // volume ceiling has a flag card above the fold and this one does not.
+      // Both layouts are correct and the assertion has to hold from either.
+      await scrollTo(tester, find.text('Recovery run'));
       await tester.tap(find.text('Recovery run'));
       await tester.pumpAndSettle();
       expect(find.text('EFFORT'), findsOneWidget);
@@ -1099,6 +1101,13 @@ void main() {
       final day = controller.plan!.weeks.first.workouts
           .firstWhere((w) => w.type == WorkoutType.tempo)
           .weekday!;
+      // Scrolled to, not tapped blind: the volume-ceiling disclosure is a
+      // flag card above the fold, so a runner who *is* held at their ceiling sees
+      // the session list lower down than a runner who is not. Both are correct
+      // layouts and the test has to work from either.
+      // Not .first: a Finder that matches nothing throws inside
+      // evaluate(), so scrollTo can never drag it into view.
+      await scrollTo(tester, find.text('Tempo'));
       await tester.tap(find.text('Tempo').first);
       await tester.pumpAndSettle();
 
@@ -1122,6 +1131,13 @@ void main() {
       final day = controller.plan!.weeks.first.workouts
           .firstWhere((w) => w.type == WorkoutType.tempo)
           .weekday!;
+      // Scrolled to, not tapped blind: the volume-ceiling disclosure is a
+      // flag card above the fold, so a runner who *is* held at their ceiling sees
+      // the session list lower down than a runner who is not. Both are correct
+      // layouts and the test has to work from either.
+      // Not .first: a Finder that matches nothing throws inside
+      // evaluate(), so scrollTo can never drag it into view.
+      await scrollTo(tester, find.text('Tempo'));
       await tester.tap(find.text('Tempo').first);
       await tester.pumpAndSettle();
 
@@ -1146,6 +1162,13 @@ void main() {
       final day = controller.plan!.weeks.first.workouts
           .firstWhere((w) => w.type == WorkoutType.tempo)
           .weekday!;
+      // Scrolled to, not tapped blind: the volume-ceiling disclosure is a
+      // flag card above the fold, so a runner who *is* held at their ceiling sees
+      // the session list lower down than a runner who is not. Both are correct
+      // layouts and the test has to work from either.
+      // Not .first: a Finder that matches nothing throws inside
+      // evaluate(), so scrollTo can never drag it into view.
+      await scrollTo(tester, find.text('Tempo'));
       await tester.tap(find.text('Tempo').first);
       await tester.pumpAndSettle();
 
@@ -1189,6 +1212,13 @@ void main() {
         goal: marathonGoal(),
       );
       await tester.pumpWidget(app(controller));
+      // Scrolled to, not tapped blind: the volume-ceiling disclosure is a
+      // flag card above the fold, so a runner who *is* held at their ceiling sees
+      // the session list lower down than a runner who is not. Both are correct
+      // layouts and the test has to work from either.
+      // Not .first: a Finder that matches nothing throws inside
+      // evaluate(), so scrollTo can never drag it into view.
+      await scrollTo(tester, find.text('Tempo'));
       await tester.tap(find.text('Tempo').first);
       await tester.pumpAndSettle();
       expectNoLayoutError(tester);

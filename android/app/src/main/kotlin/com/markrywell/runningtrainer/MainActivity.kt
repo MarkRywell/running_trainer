@@ -1,4 +1,4 @@
-package com.example.ai_running_trainer
+package com.markrywell.runningtrainer
 
 import io.flutter.embedding.android.FlutterActivity
 

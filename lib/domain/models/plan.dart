@@ -38,6 +38,20 @@ enum WorkoutType { easy, recovery, long, tempo, intervals, strides, walkRun, rac
 
 enum PlanPhase { base, specific, peak, taper, raceWeek, baseBlock }
 
+/// Weeks a base phase needs before "build volume" is a true description of it.
+///
+/// One or two weeks is not a build. It is a warm-up before the real work, and
+/// saying otherwise is how a nine-week block ends up claiming a periodised shape
+/// it never had.
+const int minimumWeeksToEarnBaseBlurb = 3;
+
+/// Weeks a peak phase needs before "the biggest weeks" is true.
+///
+/// The same reasoning, and sharper here: a peak of one or two weeks on a short
+/// block does not contain the block's largest volume, so the most confident
+/// sentence in the app is attached to the phase least able to support it.
+const int minimumWeeksToEarnPeakBlurb = 3;
+
 extension PlanPhaseLabel on PlanPhase {
   String get label => switch (this) {
         PlanPhase.base => 'Base',
@@ -55,6 +69,36 @@ extension PlanPhaseLabel on PlanPhase {
         PlanPhase.taper => 'Volume down, intensity kept. Arrive fresh.',
         PlanPhase.raceWeek => 'Race day. Everything before it is recovery.',
         PlanPhase.baseBlock => 'All easy. Build the habit before the fitness.',
+      };
+
+  /// The blurb, corrected for how many weeks this phase actually got.
+  ///
+  /// [blurb] is a plain getter because it describes a phase *in general*, and for
+  /// a normal block it is accurate. It stops being accurate when the block is too
+  /// short to earn the shape: a nine-week 10K block gets a peak phase of one or
+  /// two weeks that cannot possibly hold "the biggest weeks", and telling a
+  /// runner they are peaking when they are not is the same class of problem as
+  /// the peak that never gets any quality work in it.
+  ///
+  /// So the enum does not learn about block length — it cannot, it is an enum —
+  /// and the *caller* passes what it knows. [PlanWeek] is what has a phase and a
+  /// plan around it, so the honest question is answered where the answer exists.
+  ///
+  /// Only phases whose promise depends on duration are corrected. Specific and
+  /// taper mean the same thing at one week as at four, and the beginner base
+  /// block is a flat, all-easy shape by design rather than a truncated one.
+  String blurbFor(int phaseWeeks) => switch (this) {
+        PlanPhase.base => phaseWeeks >= minimumWeeksToEarnBaseBlurb
+            ? blurb
+            : 'Only $phaseWeeks '
+                '${phaseWeeks == 1 ? "week" : "weeks"} of base here. Not enough '
+                'room to build much volume, so this holds what you have and '
+                'moves on.',
+        PlanPhase.peak => phaseWeeks >= minimumWeeksToEarnPeakBlurb
+            ? blurb
+            : 'A short peak. Not enough weeks to reach your biggest volume, so '
+                'this is about staying sharp rather than going further.',
+        _ => blurb,
       };
 }
 
@@ -232,6 +276,19 @@ class PlanWeek {
       runVolumeKm == 0 ? 1.0 : (runVolumeKm - hardVolumeKm) / runVolumeKm;
 
   int get qualityCount => workouts.where((w) => w.isQuality).length;
+
+  /// How many weeks of the plan share this week's phase.
+  ///
+  /// Needed because a phase's description depends on how long it is, and a week
+  /// cannot know that on its own. Computed by scanning the plan rather than
+  /// stored, so it cannot drift out of step with [phase] after a regeneration.
+  int phaseLengthIn(TrainingPlan plan) {
+    var n = 0;
+    for (final w in plan.weeks) {
+      if (w.phase == phase) n++;
+    }
+    return n;
+  }
 
   Workout? get longRun {
     for (final w in workouts) {

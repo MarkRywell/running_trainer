@@ -9,7 +9,7 @@ Only third-party dependency is `shared_preferences`; the typeface is bundled, no
 
 ```bash
 flutter pub get
-flutter test                        # 642 unit + widget, mocked storage
+flutter test                        # 671 unit + widget, mocked storage
 flutter test integration_test -d emulator-5554   # 12 on-device, REAL storage
 flutter analyze                     # must be clean
 flutter build web --release
@@ -75,8 +75,28 @@ User-visible name is **Running Trainer**, and it is set in five places, not one:
 **The Dart package name is deliberately still `ai_running_trainer`.** Renaming it would rewrite
 every import in 20+ files for zero user-visible benefit. Do not "tidy" it up.
 
-`applicationId` is still `com.example.ai_running_trainer` and **blocks any store submission** — the
-user chose to defer it. A reverse-domain ID is needed and it cannot be changed after publication.
+**`applicationId` is now `com.markrywell.runningtrainer`**, and the iOS bundle id matches
+(`PRODUCT_BUNDLE_IDENTIFIER`, plus `.RunnerTests` for the test targets). `com.example.*` is the
+Flutter template placeholder and Google Play rejects it, so this was a submission blocker.
+
+**Four places must agree, and renaming one alone fails in a way that does not name the cause:**
+
+| what | where |
+|---|---|
+| `namespace` | `android/app/build.gradle.kts` |
+| `applicationId` | `android/app/build.gradle.kts` |
+| Kotlin `package` | `MainActivity.kt` |
+| the **directory** holding it | must mirror the package as folders |
+
+Move the file, don't just edit the `package` line — Kotlin does not require the folders to match,
+so a mismatched path compiles and then fails at runtime with a missing `MainActivity` that the
+manifest's `android:name=".MainActivity"` cannot explain.
+
+**A new `applicationId` is a new app.** `shared_preferences` writes under the package name, so
+every logged week, profile, race and coach decision is gone after the change. That is correct for
+a rename, and it is why the old `com.example.ai_running_trainer` install is still on the device
+alongside the new one. Uninstall the old package before testing, or you will be looking at the
+wrong build.
 
 ## Editing details, and the three ways to redo a plan
 
@@ -245,13 +265,13 @@ Still open, unchanged by this fix:
   design choice rather than a routing outcome. This is what made the bug invisible to the runner.
 - **`suppressQuality` is blunt at 3 days a week** — resolved: it now shortens a lone
   quality session rather than deleting it. See "drop-quality has two shapes".
-- **Nothing surfaces the volume ceiling.** A runner at 45 km/week peaks at `45 × 1.35` and then watches
-  volume flatten for weeks with no explanation. The plan is behaving correctly; the runner is not told.
-  `_impliedVolume` already discloses "we are guessing your mileage" — the equivalent note for "you have
-  maxed out" does not exist.
-- **A short block still gets a periodised shape it has not earned.** A 9-week 10K block is told it is
-  building toward a peak. It is closer to maintenance-plus-taper, and while the "Only N weeks to race
-  day" flag says so, the phase labels do not.
+- ~~**Nothing surfaces the volume ceiling.**~~ — resolved, see "Two things the plan was doing
+  correctly and not saying". The disclosure now exists and is careful about which mechanism
+  actually stopped the curve. The `1.35` itself is untouched and still a judgement with no source.
+- ~~**A short block still gets a periodised shape it has not earned.**~~ — resolved: `blurbFor`
+  corrects `base` and `peak` when the phase is under three weeks. The *volume* a short block
+  prescribes is unchanged, so the flag saying "not enough runway" and the plan being deliberately
+  easy are now consistent with each other.
 - **A cutback can still land in a short race-specific phase and empty it.** Now that cutbacks are 100%
   easy in every phase again, a two-week specific phase can hand its only rep week to a deload. The fix
   is to *place* cutbacks — skip one when the phase it would land in is only two weeks long — not to
@@ -791,6 +811,79 @@ in this repo have now been wrong in the same direction: **an assertion that cann
 fail is worse than one that fails**, and `expect(x, isFalse)` on a boolean
 predicate deserves a second read.
 
+## Two things the plan was doing correctly and not saying
+
+Both are the same fault, and it is the class this repo's history says ships: **a correct plan
+reads as a broken one.** Neither came from a report of something being *wrong* — both came from a
+runner looking at numbers that were all accurate and concluding the app had lost interest.
+
+`test/domain/honesty_disclosure_test.dart` is the guard for both. Each test in it was verified to
+fail with its own fix removed.
+
+### The volume ceiling was flattening plans silently
+
+`weeklyVolumeCeiling` computes `currentWeeklyKm * 1.35` and clamps the curve there. A runner at
+45 km/week peaks at 60.75 and then watches volume sit still for weeks with nothing on screen
+saying why. The plan is right; the runner is not told.
+
+The precedent is `_impliedVolume`, which has always disclosed "we are guessing your mileage."
+This is the same disclosure for the opposite case.
+
+**The number was not changed.** `volumeProgressionFactor` is now a named constant so the flag can
+do the arithmetic the runner would otherwise do themselves, and a test asserts it is still `1.35`.
+Explaining a ceiling and choosing one are different decisions, and the second is a methodology
+question.
+
+**Three mechanisms hold volume flat and the flag must not confuse them.** A cutback dips and
+resumes; the 90% rule holds a week because the runner's own log said it was hard; an accepted
+`cap-volume` proposal is the runner's own decision and carries its own explanation. Only the third
+of those is invisible. So the test is not "did a week equal the ceiling" but "**did a week reach
+it and stay there**" — two *consecutive* weeks, or a cutback dip between two ceiling weeks reads as
+a hold. The first version counted any two and the test caught it.
+
+**It reads the built weeks, not the curve that built them.** This is the fourth instance of
+"budget says one thing, the plan does another", and it only shows on large-volume runners: a
+70 km/week runner curves toward 94.5 and is held at **75.0** by the long-run cap and 80/20 long
+before the ceiling is in play. Judged on the curve, the flag tells that runner they have maxed out
+when they have not — worse than saying nothing.
+
+**Two cases where the flag correctly stays silent, and both are load-bearing:**
+
+- a **5K block** never reaches a volume ceiling. Its 14 km long-run cap flattens the week near
+  54.6 km, so the plan is stopping for a different reason and a volume claim would be false.
+- a block that touches the ceiling for **exactly one week** is a peak grazing its cap, not a
+  plateau. The 12-week no-goal base block does precisely this at 60.8 km.
+
+### A phase was claiming a shape the block never earned
+
+`PlanPhase.blurb` is a static switch, so `peak` always read *"The biggest weeks, and the hardest."*
+A 9-week 10K block gets a one-week peak that cannot contain the biggest weeks. The "Only N weeks to
+race day" flag already says so at the plan level, so the phase labels were contradicting a flag
+three screens away.
+
+`blurbFor(phaseWeeks)` corrects `base` and `peak` only, both below `minimumWeeksToEarn*Blurb = 3`.
+Specific, taper, race week and the beginner base block mean the same thing at one week as at four —
+correcting those would invent a rule the ladder never had.
+
+**The enum does not learn about block length.** It is an enum; it cannot know. `PlanWeek.phaseLengthIn(plan)`
+scans the plan, and the two call sites in `plan_screen.dart` pass it. A lookahead that returned 1
+for a week whose *next* week differed would make the last week of every phase under-report its own
+phase, so the test asserts the count against an independent recount for **every** week.
+
+**The test pins the divergence, not the wording** — a short block's peak is not the plain blurb, a
+long one's still is. A copy edit then cannot break it, and a real behaviour change can.
+
+### One more test fix, and why it is not a test fix
+
+The volume flag is a card above the fold, so on a capped plan the session list sits lower. Five
+widget tests tapped `find.text('Tempo')` blind and failed with `Bad state: No element`. The code
+was correct; the tests assumed a layout that is now one of two. They now use the file's existing
+`scrollTo` helper.
+
+**`scrollTo` must not be given a `.first` finder.** `find.text('Tempo').first` throws inside
+`evaluate()` when nothing matches, so `scrollTo`'s `f.evaluate().isNotEmpty` check never runs and
+the drag-to-visible path is unreachable. Pass the bare finder and keep `.first` for the tap.
+
 ## Zone anchor is CURRENT FITNESS, never the goal race pace — reversed
 
 **Found via a real report.** A runner with a 52:25 10K, a 1:56:10 half and a 49:00 10K goal — a
@@ -1100,7 +1193,7 @@ runner's target.
 ## Tests
 
 ```bash
-flutter test                                  # 642 unit + widget, mocked storage
+flutter test                                  # 671 unit + widget, mocked storage
 flutter test integration_test -d emulator-5554 # 12 on-device, REAL storage
 ```
 
@@ -1135,8 +1228,8 @@ trust the device.
 Storage is verified by inspecting the app's data directory rather than assumed:
 
 ```bash
-adb shell run-as com.example.ai_running_trainer ls shared_prefs
-adb shell run-as com.example.ai_running_trainer cat shared_prefs/FlutterSharedPreferences.xml
+adb shell run-as com.markrywell.runningtrainer ls shared_prefs
+adb shell run-as com.markrywell.runningtrainer cat shared_prefs/FlutterSharedPreferences.xml
 ```
 
 `shared_preferences` writes to the app data dir and survives restarts and reboots, but not
@@ -1154,9 +1247,9 @@ test suite to assert on-device behaviour instead of scraping the view hierarchy.
 
 ## Known limitations
 
-- **`applicationId` is still `com.example.ai_running_trainer`**, the Flutter template placeholder.
-  Not publishable. It needs a real reverse-domain ID, which requires a domain the user owns — the
-  user has deferred this. It cannot be changed after a store submission.
+- ~~**`applicationId` is still `com.example.ai_running_trainer`**~~ — resolved. It is now
+  `com.markrywell.runningtrainer`, with the Kotlin package, its directory and the iOS bundle id all
+  moved to match. Verified by `aapt2 dump packagename` on a real `--profile` APK.
 
 
 
@@ -1244,9 +1337,11 @@ implemented as the 90% rule.
 
 Remaining:
 
-- **`applicationId` is still `com.example.ai_running_trainer`**, the Flutter template placeholder.
-  Not publishable. It needs a real reverse-domain ID, which requires a domain the user owns — the
-  user has deferred this. It cannot be changed after a store submission.
+- ~~**`applicationId` is still `com.example.ai_running_trainer`**~~ — resolved, now
+  `com.markrywell.runningtrainer`. The reverse domain is the GitHub handle rather than a
+  registrable domain the user owns, which is common for indie apps and acceptable to Play, but it
+  is worth revisiting if a real domain is ever acquired. **It cannot be changed after a store
+  submission**, so this is the last chance to correct it.
 - **No imperial units.** Everything is SI internally; display conversion is not built. Metric was an
   explicit product decision.
 - **Plan is anchored to the next Monday after onboarding**, not the onboarding day. A mid-week start

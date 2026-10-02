@@ -298,6 +298,11 @@ double longRunCapKm(RaceDistance goal) => switch (goal) {
 /// A sensible ceiling on weekly volume for a given athlete, in km.
 ///
 /// Used to stop the progression running away on a big-volume plan.
+///
+/// A judgement, not a source, and it is deliberately left alone by the flag in
+/// [volumeCeilingBinds]. Explaining the ceiling to the runner and changing what
+/// it is are two different decisions: this number says how far a plan will take
+/// someone, and that is a methodology question, not a copy question.
 double weeklyVolumeCeiling({
   required bool beginner,
   required RaceDistance? goal,
@@ -305,9 +310,8 @@ double weeklyVolumeCeiling({
 }) {
   if (beginner) return 55; // capping around 5 days is plenty
   if (currentWeeklyKm != null && currentWeeklyKm > 0) {
-    // Never more than ~35% above what they are already doing.
-    final cap = currentWeeklyKm * 1.35;
-    return cap < 120 ? cap : 120;
+    final cap = currentWeeklyKm * volumeProgressionFactor;
+    return cap < maxVolumeCeilingKm ? cap : maxVolumeCeilingKm;
   }
   return switch (goal) {
     RaceDistance.marathon => 80,
@@ -316,6 +320,96 @@ double weeklyVolumeCeiling({
     RaceDistance.k5 => 45,
     null => 60,
   };
+}
+
+/// How far above a runner's current weekly volume a plan may take them.
+///
+/// Exposed so the disclosure below can do the arithmetic the runner would
+/// otherwise have to do themselves. See [weeklyVolumeCeiling] for why this is a
+/// constant rather than being inlined at the call site.
+const double volumeProgressionFactor = 1.35;
+
+/// Absolute floor on that ceiling, in km.
+///
+/// A runner already doing 100 km a week would otherwise be told they may reach
+/// 120, which is not a ceiling in any useful sense.
+const double maxVolumeCeilingKm = 120;
+
+/// Tolerance when asking "is this week sitting at the ceiling".
+///
+/// The curve is built by repeated multiplication, so a week that *would* have
+/// exceeded the cap lands a few floating-point ulps below it rather than exactly
+/// on it. Comparing with `==` would miss the bind and the disclosure would never
+/// appear — a test asserting the flag exists would catch that, which is the
+/// point of writing one.
+const double _ceilingToleranceKm = 0.05;
+
+/// Whether the volume curve actually stopped growing because it hit its ceiling.
+///
+/// The disclosure this drives is only true if the ceiling is what stopped it.
+/// Three other things flatten a curve, and conflating them would put a confident
+/// explanation on a plan that was shaped by something else entirely:
+///
+/// - a **cutback**, which dips and resumes;
+/// - the **90% rule** holding a week flat, which is the runner's own logged
+///   difficulty and is already visible to them in the log;
+/// - an **accepted `cap-volume` proposal**, which is explicitly the runner's own
+///   decision and carries its own explanation.
+///
+/// So the test is not "did any week equal the ceiling" but "did a week reach it
+/// and then **stay** there". A curve that touched the ceiling for exactly one
+/// week and turned around is not a runner who has maxed out, and neither is one
+/// that reached it, dipped for a cutback, and came back — a dip between two
+/// ceiling weeks is a cutback resuming, not a ceiling holding.
+bool volumeCeilingBinds({
+  required List<double> volumes,
+  required double ceiling,
+}) {
+  if (volumes.isEmpty || ceiling <= 0) return false;
+  // Consecutive weeks at the ceiling is the shape of a runner who has run out of
+  // road. Taper and race weeks fall below it by construction, so a run that
+  // reaches them breaks the sequence and cannot produce a false positive.
+  var run = 0;
+  for (final v in volumes) {
+    if ((v - ceiling).abs() <= _ceilingToleranceKm) {
+      run++;
+      if (run >= 2) return true;
+    } else {
+      run = 0;
+    }
+  }
+  return false;
+}
+
+/// The flag shown when the ceiling is what stopped the volume growing.
+///
+/// Returns an empty list when nothing is wrong, so a caller can spread it in
+/// unconditionally rather than branching.
+List<PlanFlag> volumeCeilingFlags({
+  required List<double> volumes,
+  required double ceiling,
+  required double currentWeeklyKm,
+}) {
+  if (!volumeCeilingBinds(volumes: volumes, ceiling: ceiling)) {
+    return const [];
+  }
+  return [
+    PlanFlag(
+      severity: FlagSeverity.info,
+      title: 'Your plan has reached the volume it can build to',
+      detail:
+          'You run about ${currentWeeklyKm.round()} km a week, and this plan '
+          'will not ask you for more than about ${ceiling.round()} — roughly '
+          '${((volumeProgressionFactor - 1) * 100).round()}% above where you '
+          'already are. That is deliberate: a block that keeps adding distance '
+          'on top of an already-hard week is how runners get hurt rather than '
+          'faster.\n\n'
+          'From here the quality of each run does the work — the goal-pace long '
+          'runs, the sharpening sessions, and the fact that the easy days are '
+          'genuinely easy. If you want to go further, the honest route is a few '
+          'steady weeks at this volume first, and then telling us your new normal.',
+    ),
+  ];
 }
 
 /// The build weeks that are cutbacks, **placed** rather than sampled.

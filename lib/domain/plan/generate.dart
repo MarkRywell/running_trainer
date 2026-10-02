@@ -364,6 +364,14 @@ TrainingPlan buildTrainedBasePlan({
     startDate: monday,
     goal: null,
     flags: [
+      // From the built weeks, not the raw curve — see the note in
+      // `buildRacePlan`. `enforceSafety` is what decides the real maximum, and
+      // the disclosure has to describe the plan the runner is handed.
+      ...volumeCeilingFlags(
+        volumes: weeks.map((w) => w.targetVolumeKm).toList(),
+        ceiling: ceiling,
+        currentWeeklyKm: currentWeeklyKm,
+      ),
       const PlanFlag(
         severity: FlagSeverity.info,
         title: 'No goal race set',

@@ -469,4 +469,141 @@ void main() {
   test('volumeOf sums distances', () {
     expect(volumeOf([run('a', 5), run('b', 7.5), rest]), 12.5);
   });
+
+  group('the volume ceiling is disclosed, not silently applied', () {
+    // A runner at 45 km/week gets a ceiling of 45 x 1.35 = 60.75, reaches it,
+    // and then watches their volume sit flat for weeks with nothing on screen
+    // saying why. The plan is behaving correctly; the runner is not told. This
+    // is the same disclosure `_impliedVolume` already makes about guessing
+    // mileage, for the opposite case.
+    test('binds when two or more weeks sit at the ceiling', () {
+      expect(
+        volumeCeilingBinds(volumes: [40, 50, 60.75, 60.75, 60.75], ceiling: 60.75),
+        isTrue,
+      );
+    });
+
+    test('does not bind on a curve that never reaches the ceiling', () {
+      expect(
+        volumeCeilingBinds(volumes: [40, 44, 48, 52], ceiling: 60.75),
+        isFalse,
+      );
+    });
+
+    test('a single week at the ceiling is not a runner who has maxed out', () {
+      // Touching the cap and turning around is not the same as being held there.
+      // Without this the flag would fire on any block that happened to graze its
+      // ceiling in its peak week.
+      expect(
+        volumeCeilingBinds(volumes: [40, 50, 60.75, 55], ceiling: 60.75),
+        isFalse,
+      );
+    });
+
+    test('a cutback dip between ceiling weeks is not a hold', () {
+      // The first version of this counted *any* two weeks at the ceiling, so
+      // reaching it, dipping for a cutback and returning looked identical to
+      // being held there. It is not: the dip is a cutback resuming, and the
+      // runner has not watched their volume sit still.
+      expect(
+        volumeCeilingBinds(volumes: [60.75, 45.5, 60.75], ceiling: 60.75),
+        isFalse,
+        reason: 'reaching the ceiling, dipping, and returning is not a hold',
+      );
+    });
+
+    test('consecutive weeks at the ceiling bind even when a cutback precedes', () {
+      expect(
+        volumeCeilingBinds(volumes: [60.75, 45.5, 60.75, 60.75], ceiling: 60.75),
+        isTrue,
+        reason: 'the last two weeks really are held at the ceiling',
+      );
+    });
+
+    test('an empty curve never binds', () {
+      expect(volumeCeilingBinds(volumes: [], ceiling: 60), isFalse);
+    });
+
+    test('a zero or negative ceiling never binds', () {
+      expect(volumeCeilingBinds(volumes: [10, 10], ceiling: 0), isFalse);
+    });
+
+    test('floating point drift does not hide the bind', () {
+      // The curve is built by repeated multiplication, so a clamped week lands
+      // fractionally *below* the cap rather than exactly on it. An `==`
+      // comparison would miss this and the disclosure would never appear, which
+      // is why the tolerance exists and why this test exists.
+      final drifted = 60.75 - 1e-9;
+      expect(
+        volumeCeilingBinds(volumes: [50, drifted, drifted], ceiling: 60.75),
+        isTrue,
+      );
+    });
+
+    test('the flag names the ceiling and the arithmetic behind it', () {
+      final flags = volumeCeilingFlags(
+        volumes: [50, 60.75, 60.75],
+        ceiling: 60.75,
+        currentWeeklyKm: 45,
+      );
+      expect(flags, hasLength(1));
+      expect(flags.first.severity, FlagSeverity.info);
+      expect(flags.first.title, contains('reached the volume'));
+      expect(flags.first.detail, contains('45'));
+      expect(flags.first.detail, contains('61'));
+    });
+
+    test('no flag when the ceiling is not what stopped the curve', () {
+      expect(
+        volumeCeilingFlags(
+          volumes: [40, 44, 48],
+          ceiling: 60.75,
+          currentWeeklyKm: 45,
+        ),
+        isEmpty,
+      );
+    });
+
+    test('the disclosure reports the plan, not the curve that built it', () {
+      // A regression that only appears on large-volume runners, and it is the
+      // third instance of this repo's "budget says one thing, the plan does
+      // another" fault. The curve for a 70 km/week runner runs toward 94.5, but
+      // `enforceSafety` holds the reported weeks at 75.0 — the long-run cap and
+      // 80/20 bind first. Judged on the raw curve the runner is told they have
+      // maxed out when they have not, which is worse than saying nothing.
+      // The raw curve for a 70 km/week runner: it climbs to the cap and is held
+      // there, because nothing else in the curve knows about the long-run cap or
+      // 80/20. Two weeks at the ceiling, so this is a genuine bind.
+      final rawCurve = [70.0, 80.0, 88.0, 94.5, 94.5, 94.5];
+
+      // What `enforceSafety` actually prescribes. The long-run cap and 80/20
+      // bind first and hold the weeks at 75, so the ceiling was never reached by
+      // anything the runner can see.
+      final actuallyPrescribed = [70.0, 72.0, 74.0, 75.0, 75.0, 75.0];
+
+      // The ceiling genuinely stopped the curve...
+      expect(
+        volumeCeilingBinds(volumes: rawCurve, ceiling: 94.5),
+        isTrue,
+      );
+      // ...but the plan the runner is handed never reached it, so there is
+      // nothing to disclose.
+      expect(
+        volumeCeilingBinds(volumes: actuallyPrescribed, ceiling: 94.5),
+        isFalse,
+        reason: 'the reported weeks top out at 75, well under a 94.5 ceiling',
+      );
+    });
+
+    test('the ceiling is unchanged by any of this', () {
+      // The disclosure explains the number; it does not get to move it. Changing
+      // the progression ceiling is a methodology decision, and this is the
+      // assertion that keeps the two from being quietly merged.
+      expect(volumeProgressionFactor, 1.35);
+      expect(
+        weeklyVolumeCeiling(beginner: false, goal: null, currentWeeklyKm: 45),
+        closeTo(60.75, 0.001),
+      );
+    });
+  });
 }

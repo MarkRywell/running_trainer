@@ -279,6 +279,20 @@ RacePlanResult buildRacePlan({
   }
 
   final allFlags = <PlanFlag>[
+    // Read from the **built weeks**, not from the raw curve.
+    //
+    // `enforceSafety` trims a week to what its sessions actually prescribe, and
+    // on a large block that trimming is what decides the real maximum — a 70
+    // km/week runner curves toward 94.5 and is held at 75.0 by the long-run cap
+    // and 80/20 long before the ceiling is in play. Judging the disclosure on
+    // the curve would then tell that runner they had maxed out when they had
+    // not, which is the "budget says one thing, the plan does another" fault
+    // this codebase has hit three times.
+    ...volumeCeilingFlags(
+      volumes: weeks.map((w) => w.targetVolumeKm).toList(),
+      ceiling: ceiling,
+      currentWeeklyKm: currentWeeklyKm,
+    ),
     if (available > maxPlanWeeks)
       PlanFlag(
         severity: FlagSeverity.info,

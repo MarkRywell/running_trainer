@@ -5,7 +5,10 @@ plugins {
 }
 
 android {
-    namespace = "com.example.ai_running_trainer"
+    // Must match the Kotlin `package` in MainActivity.kt and the directory it
+    // lives in. Renaming one without the other fails the build with a missing
+    // class rather than anything that names the real cause.
+    namespace = "com.markrywell.runningtrainer"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -15,8 +18,17 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.ai_running_trainer"
+        // The store-facing identity. `com.example.*` is the Flutter template
+        // placeholder and is rejected by Google Play, so this is a real
+        // reverse-domain name.
+        //
+        // It cannot be changed after a store submission — Play keys the app to
+        // this string permanently, and a different one is a different app. So it
+        // also decides where the app's data lives: `shared_preferences` writes
+        // under the applicationId, which is why every logged week, profile and
+        // coach decision disappears when this changes. That is the intended
+        // behaviour for a rename, but it is not a thing to do casually.
+        applicationId = "com.markrywell.runningtrainer"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
